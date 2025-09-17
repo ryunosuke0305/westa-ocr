@@ -8,8 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=5000
 
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r backend/requirements.txt
+RUN pip install -r backend/requirements.txt
 
 COPY backend ./backend
 COPY frontend ./frontend
