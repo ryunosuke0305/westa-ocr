@@ -125,6 +125,34 @@ def ocr_endpoint():
     return jsonify({"results": results, "job_id": job.job_id})
 
 
+@app.route("/api/prompt", methods=["GET"])
+def get_prompt_template():
+    """Return the currently configured Gemini prompt template."""
+    prompt = ocr_service.get_prompt_template()
+    return jsonify({"prompt": prompt})
+
+
+@app.route("/api/prompt", methods=["POST"])
+def update_prompt_template():
+    """Update the Gemini prompt template and persist it to storage."""
+    payload = request.get_json(silent=True) or {}
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str):
+        return _error_response("プロンプトが指定されていません。", HTTPStatus.BAD_REQUEST)
+    if not prompt.strip():
+        return _error_response(
+            "プロンプトを空にすることはできません。", HTTPStatus.BAD_REQUEST
+        )
+    try:
+        ocr_service.update_prompt_template(prompt)
+    except OSError as exc:
+        LOGGER.exception("Failed to persist prompt template")
+        return _error_response(
+            "プロンプトの保存に失敗しました。", HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+    return jsonify({"message": "プロンプトを更新しました。"})
+
+
 def _error_response(
     message: str, status: HTTPStatus, job: Optional["JobContext"] = None
 ):

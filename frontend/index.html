@@ -49,6 +49,11 @@
         <div class="offcanvas-body d-flex flex-column">
             <ul class="navbar-nav flex-grow-1 gap-2">
                 <li class="nav-item"><a class="nav-link active" data-bs-dismiss="offcanvas" href="#app"><i class="bi bi-gear-wide-connected me-2"></i>OCR実行</a></li>
+                <li class="nav-item">
+                    <a class="nav-link" href="#" data-bs-dismiss="offcanvas" @click.prevent="openPromptSettings">
+                        <i class="bi bi-sliders me-2"></i>プロンプト設定
+                    </a>
+                </li>
             </ul>
             <div class="small text-muted border-top pt-3">
                 <p class="mb-1"><i class="bi bi-cloud-arrow-up"></i> PDFの自動抽出をさらに効率化。</p>
@@ -143,6 +148,42 @@
         </div>
     </div>
 
+    <div class="modal fade" id="promptSettingsModal" tabindex="-1" aria-labelledby="promptSettingsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title" id="promptSettingsModalLabel"><i class="bi bi-sliders"></i> プロンプト設定</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="閉じる"></button>
+                </div>
+                <form @submit.prevent="savePromptSettings">
+                    <div class="modal-body">
+                        <div v-if="isPromptLoading" class="d-flex align-items-center justify-content-center py-4 text-muted">
+                            <div class="spinner-border me-3" role="status" aria-hidden="true"></div>
+                            <span>プロンプトを読み込んでいます...</span>
+                        </div>
+                        <div v-else>
+                            <div class="mb-3">
+                                <label for="promptEditor" class="form-label fw-semibold">Gemini への指示内容</label>
+                                <textarea id="promptEditor" class="form-control" rows="10" v-model="promptText" :disabled="isPromptSaving" placeholder="Gemini に渡すプロンプトを入力してください。"></textarea>
+                                <div class="form-text">`{filename}` を差し込むと、アップロードしたファイル名を文中に挿入できます。</div>
+                            </div>
+                            <div v-if="promptFeedback" class="alert" :class="promptFeedback.type === 'success' ? 'alert-success' : 'alert-danger'">
+                                <i :class="promptFeedback.type === 'success' ? 'bi bi-check-circle-fill me-2' : 'bi bi-exclamation-triangle-fill me-2'"></i>{{ promptFeedback.message }}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">閉じる</button>
+                        <button type="submit" class="btn btn-primary" :disabled="isPromptLoading || isPromptSaving">
+                            <span v-if="isPromptSaving" class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            保存する
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <footer class="bg-white py-4 border-top mt-5">
         <div class="container text-center text-muted small">
             &copy; {{ new Date().getFullYear() }} Gemini OCR Web App
@@ -162,7 +203,11 @@
                     isLoading: false,
                     results: [],
                     errorMessage: '',
-                    apiStatus: null
+                    apiStatus: null,
+                    promptText: '',
+                    isPromptLoading: false,
+                    isPromptSaving: false,
+                    promptFeedback: null
                 };
             },
             methods: {
@@ -241,6 +286,70 @@
                     link.click();
                     document.body.removeChild(link);
                     URL.revokeObjectURL(url);
+                },
+                getPromptModalInstance() {
+                    const modalElement = document.getElementById('promptSettingsModal');
+                    if (!modalElement || !window.bootstrap || !window.bootstrap.Modal) {
+                        return null;
+                    }
+                    return window.bootstrap.Modal.getOrCreateInstance(modalElement);
+                },
+                openPromptSettings(event) {
+                    if (event) {
+                        event.preventDefault();
+                    }
+                    this.promptFeedback = null;
+                    const modal = this.getPromptModalInstance();
+                    if (modal) {
+                        modal.show();
+                    }
+                    this.loadPromptTemplate();
+                },
+                async loadPromptTemplate() {
+                    this.isPromptLoading = true;
+                    try {
+                        const response = await axios.get('/api/prompt');
+                        this.promptText = response.data.prompt || '';
+                    } catch (error) {
+                        console.error('プロンプトの読み込みに失敗しました:', error);
+                        const message = error.response?.data?.error || error.message || 'プロンプトの読み込みに失敗しました。';
+                        this.promptFeedback = {
+                            type: 'error',
+                            message: `読み込みに失敗しました: ${message}`
+                        };
+                    } finally {
+                        this.isPromptLoading = false;
+                    }
+                },
+                async savePromptSettings() {
+                    if (this.isPromptLoading || this.isPromptSaving) {
+                        return;
+                    }
+                    if (!this.promptText || this.promptText.trim() === '') {
+                        this.promptFeedback = {
+                            type: 'error',
+                            message: 'プロンプトを空にすることはできません。'
+                        };
+                        return;
+                    }
+                    this.promptFeedback = null;
+                    this.isPromptSaving = true;
+                    try {
+                        await axios.post('/api/prompt', { prompt: this.promptText });
+                        this.promptFeedback = {
+                            type: 'success',
+                            message: 'プロンプトを更新しました。'
+                        };
+                    } catch (error) {
+                        console.error('プロンプトの保存に失敗しました:', error);
+                        const message = error.response?.data?.error || error.message || 'プロンプトの保存に失敗しました。';
+                        this.promptFeedback = {
+                            type: 'error',
+                            message: `保存に失敗しました: ${message}`
+                        };
+                    } finally {
+                        this.isPromptSaving = false;
+                    }
                 }
             }
         }).mount('#app');
