@@ -81,6 +81,12 @@
                     </button>
                 </div>
 
+                <div v-if="apiStatus" class="alert mt-3" :class="apiStatus.success ? 'alert-success' : 'alert-warning'" role="status">
+                    <i :class="apiStatus.success ? 'bi bi-check-circle-fill' : 'bi bi-info-circle-fill'"></i>
+                    <span class="ms-2">{{ apiStatus.message }}</span>
+                    <span v-if="apiStatus.jobId" class="badge text-bg-light ms-2">ジョブID: {{ apiStatus.jobId }}</span>
+                </div>
+
                 <div v-if="errorMessage" class="alert alert-danger mt-3" role="alert">
                     <i class="bi bi-exclamation-triangle-fill"></i> {{ errorMessage }}
                 </div>
@@ -155,7 +161,8 @@
                     selectedFile: null,
                     isLoading: false,
                     results: [],
-                    errorMessage: ''
+                    errorMessage: '',
+                    apiStatus: null
                 };
             },
             methods: {
@@ -174,6 +181,7 @@
                     this.selectedFile = file || null;
                     this.results = [];
                     this.errorMessage = '';
+                    this.apiStatus = null;
                 },
                 async uploadAndProcess() {
                     if (!this.selectedFile) {
@@ -184,6 +192,7 @@
                     this.isLoading = true;
                     this.results = [];
                     this.errorMessage = '';
+                    this.apiStatus = null;
 
                     const formData = new FormData();
                     formData.append('file', this.selectedFile);
@@ -194,10 +203,28 @@
                             timeout: 300000
                         });
                         this.results = response.data.results || [];
+                        const jobId = response.data.job_id || '';
+                        const message = jobId
+                            ? `APIレスポンスを正常に受信しました（ジョブID: ${jobId}）`
+                            : 'APIレスポンスを正常に受信しました。';
+                        this.apiStatus = {
+                            success: true,
+                            message,
+                            jobId
+                        };
                     } catch (error) {
                         console.error('OCR処理中にエラーが発生しました:', error);
                         const message = error.response?.data?.error || error.message || '不明なエラーが発生しました。';
                         this.errorMessage = `エラーが発生しました: ${message}`;
+                        const jobId = error.response?.data?.job_id || '';
+                        const statusMessage = jobId
+                            ? `APIレスポンスを受信できませんでした（ジョブID: ${jobId}）。`
+                            : 'APIレスポンスを受信できませんでした。';
+                        this.apiStatus = {
+                            success: false,
+                            message: statusMessage,
+                            jobId
+                        };
                     } finally {
                         this.isLoading = false;
                     }
