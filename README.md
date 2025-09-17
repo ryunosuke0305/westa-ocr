@@ -51,6 +51,8 @@ Gemini APIを利用して、PDFから以下の項目を抽出します。
 * Docker がインストールされていること。
 * プロジェクトのルートディレクトリに.envファイルを作成し、Gemini APIキーを記述していること。
   * `cp .env.example .env` でひな形をコピーし、値を編集してください。
+* ユーザーアップロード、ジョブ履歴、応答履歴、APIキーを保存するホスト側ディレクトリを用意し、コンテナの`/data`配下にバインドすること。
+  * 必要に応じて `.env` ファイルで `UPLOAD_DIR` などのパスを上書きできます。
 
 **.env ファイルの例:**
 
@@ -63,14 +65,21 @@ GEMINI\_API\_KEY="YOUR\_GEMINI\_API\_KEY"
 \# ビルド
 docker build -t westa-ocr .
 
+\# 永続化ディレクトリの作成
+mkdir -p data/uploads data/jobs data/responses data/keys
+
 \# コンテナ起動
 docker run \
   --env-file .env \
-  -p 8080:8080 \
+  -v $(pwd)/data/uploads:/data/uploads \
+  -v $(pwd)/data/jobs:/data/jobs \
+  -v $(pwd)/data/responses:/data/responses \
+  -v $(pwd)/data/keys:/data/keys \
+  -p 5000:5000 \
   --name westa-ocr \
   westa-ocr
 
-起動後、Webブラウザで http://localhost:8080 にアクセスしてください。
+起動後、Webブラウザで http://localhost:5000 にアクセスしてください。
 
 ### **停止・削除コマンド**
 

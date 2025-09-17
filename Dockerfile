@@ -1,19 +1,24 @@
+# syntax=docker/dockerfile:1.5
 FROM python:3.11-slim
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8080
+    PORT=5000
 
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r backend/requirements.txt
 
 COPY backend ./backend
 COPY frontend ./frontend
 
+RUN mkdir -p /data/uploads /data/jobs /data/responses /data/keys
+VOLUME ["/data/uploads", "/data/jobs", "/data/responses", "/data/keys"]
+
 WORKDIR /app/backend
 
-EXPOSE 8080
+EXPOSE 5000
 
 CMD ["python", "app.py"]
