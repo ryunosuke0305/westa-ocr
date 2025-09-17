@@ -234,6 +234,139 @@ def _persist_response(job: JobContext, results: List[Dict[str, Any]]) -> Path:
     return destination
 
 
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    """Return the latest job history entries."""
+    raw_limit = request.args.get("limit", "20")
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        limit = 20
+    limit = max(1, min(limit, 100))
+
+    try:
+        jobs = _collect_jobs(limit)
+    except OSError:
+        LOGGER.exception("Failed to list job history")
+        return _error_response(
+            "ジョブ履歴の取得に失敗しました。", HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+    return jsonify({"jobs": jobs})
+
+
+@app.route("/api/jobs/<job_id>/logs", methods=["GET"])
+def job_logs(job_id: str):
+    """Return log entries for a specific job."""
+    job_dir = config.job_history_dir / job_id
+    if not job_dir.exists() or not job_dir.is_dir():
+        return _error_response("指定されたジョブは見つかりません。", HTTPStatus.NOT_FOUND)
+
+    try:
+        payload = _load_job_logs(job_id)
+    except OSError:
+        return _error_response(
+            "ジョブログの読み込みに失敗しました。", HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+
+    return jsonify(payload)
+
+
+def _load_job_metadata(job_dir: Path) -> Dict[str, Any]:
+    events_path = job_dir / "events.jsonl"
+    created_at: Optional[str] = None
+    original_filename = ""
+
+    if events_path.is_file():
+        try:
+            with open(events_path, "r", encoding="utf-8") as events_file:
+                for line in events_file:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        LOGGER.warning(
+                            "Invalid JSON in job history for %s: %s",
+                            job_dir.name,
+                            line.strip(),
+                        )
+                        continue
+                    created_at = created_at or entry.get("timestamp")
+                    if not original_filename:
+                        original_filename = entry.get("original_filename", "")
+                    if created_at and original_filename:
+                        break
+        except OSError:
+            LOGGER.exception("Failed to read job metadata for %s", job_dir)
+
+    if created_at is None:
+        created_at = datetime.fromtimestamp(
+            job_dir.stat().st_mtime, timezone.utc
+        ).isoformat()
+
+    return {
+        "job_id": job_dir.name,
+        "created_at": created_at,
+        "original_filename": original_filename,
+    }
+
+
+def _collect_jobs(limit: int) -> List[Dict[str, Any]]:
+    job_dirs = [
+        path
+        for path in config.job_history_dir.iterdir()
+        if path.is_dir()
+    ]
+    sorted_dirs = sorted(job_dirs, key=lambda path: path.name, reverse=True)
+    jobs: List[Dict[str, Any]] = []
+    for job_dir in sorted_dirs[:limit]:
+        jobs.append(_load_job_metadata(job_dir))
+    return jobs
+
+
+def _load_job_logs(job_id: str) -> Dict[str, Any]:
+    job_dir = config.job_history_dir / job_id
+    events_path = job_dir / "events.jsonl"
+    logs: List[Dict[str, Any]] = []
+    original_filename = ""
+    created_at: Optional[str] = None
+
+    if events_path.is_file():
+        try:
+            with open(events_path, "r", encoding="utf-8") as events_file:
+                for line in events_file:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        LOGGER.warning(
+                            "Invalid JSON in job history for %s: %s",
+                            job_id,
+                            line.strip(),
+                        )
+                        continue
+                    logs.append(entry)
+                    created_at = created_at or entry.get("timestamp")
+                    if not original_filename:
+                        original_filename = entry.get("original_filename", "")
+        except OSError:
+            LOGGER.exception("Failed to read job log for %s", job_id)
+            raise
+
+    if created_at is None:
+        created_at = datetime.fromtimestamp(
+            job_dir.stat().st_mtime, timezone.utc
+        ).isoformat()
+
+    return {
+        "job_id": job_id,
+        "logs": logs,
+        "original_filename": original_filename,
+        "created_at": created_at,
+    }
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path: str):

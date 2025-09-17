@@ -51,6 +51,11 @@
                 <ul class="navbar-nav flex-grow-1 gap-2">
                     <li class="nav-item"><a class="nav-link active" data-bs-dismiss="offcanvas" href="#mainContent"><i class="bi bi-gear-wide-connected me-2"></i>OCR実行</a></li>
                     <li class="nav-item">
+                        <a class="nav-link" href="#jobHistory" data-bs-dismiss="offcanvas" @click.prevent="showJobHistory">
+                            <i class="bi bi-clock-history me-2"></i>ジョブ履歴
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="#" data-bs-dismiss="offcanvas" @click.prevent="openPromptSettings">
                             <i class="bi bi-sliders me-2"></i>プロンプト設定
                         </a>
@@ -147,6 +152,95 @@
                     </div>
                 </div>
             </div>
+
+            <section id="jobHistory" class="mt-5">
+                <div class="card shadow-sm">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-clock-history text-primary"></i> ジョブ履歴</h5>
+                        <button class="btn btn-outline-primary btn-sm" @click="refreshJobHistory" :disabled="jobHistory.isJobsLoading || jobHistory.isLogsLoading">
+                            <span v-if="jobHistory.isJobsLoading" class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            更新
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-4">
+                            <div class="col-lg-4">
+                                <h6 class="fw-semibold text-primary mb-3"><i class="bi bi-folder2-open me-2"></i>ジョブ一覧</h6>
+                                <div v-if="jobHistory.isJobsLoading" class="d-flex align-items-center justify-content-center text-muted border rounded py-4 bg-white">
+                                    <div class="spinner-border me-2" role="status" aria-hidden="true"></div>
+                                    <span>ジョブを読み込んでいます...</span>
+                                </div>
+                                <div v-else-if="jobHistory.jobsError" class="alert alert-warning" role="alert">
+                                    <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ jobHistory.jobsError }}
+                                </div>
+                                <div v-else-if="jobHistory.jobs.length > 0" class="list-group">
+                                    <button
+                                        v-for="job in jobHistory.jobs"
+                                        :key="job.job_id"
+                                        type="button"
+                                        class="list-group-item list-group-item-action"
+                                        :class="{ active: job.job_id === jobHistory.selectedJobId }"
+                                        @click="selectJob(job.job_id)"
+                                    >
+                                        <div class="d-flex w-100 justify-content-between align-items-start">
+                                            <div>
+                                                <div class="fw-semibold">{{ job.original_filename || '（ファイル名未記録）' }}</div>
+                                                <div class="small text-muted">ジョブID: {{ job.job_id }}</div>
+                                            </div>
+                                            <small class="text-muted ms-2">{{ formatDate(job.created_at) }}</small>
+                                        </div>
+                                    </button>
+                                </div>
+                                <div v-else class="text-center text-muted border rounded py-4 bg-white">
+                                    <i class="bi bi-inbox me-2"></i>保存されたジョブはまだありません。
+                                </div>
+                            </div>
+                            <div class="col-lg-8">
+                                <h6 class="fw-semibold text-primary mb-3"><i class="bi bi-clipboard-data me-2"></i>ログ詳細</h6>
+                                <div v-if="jobHistory.selectedJobId" class="mb-3">
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <span class="badge text-bg-primary"><i class="bi bi-hash me-1"></i>{{ jobHistory.selectedJobId }}</span>
+                                        <span class="badge text-bg-light text-muted"><i class="bi bi-file-earmark-text me-1"></i>{{ jobHistory.selectedJobInfo.original_filename || 'ファイル名未記録' }}</span>
+                                        <span class="badge text-bg-light"><i class="bi bi-clock me-1"></i>{{ formatDate(jobHistory.selectedJobInfo.created_at) }}</span>
+                                    </div>
+                                </div>
+                                <div v-if="jobHistory.isLogsLoading" class="d-flex align-items-center justify-content-center text-muted border rounded py-5 bg-white">
+                                    <div class="spinner-border me-2" role="status" aria-hidden="true"></div>
+                                    <span>ログを読み込んでいます...</span>
+                                </div>
+                                <div v-else-if="jobHistory.logsError" class="alert alert-warning" role="alert">
+                                    <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ jobHistory.logsError }}
+                                </div>
+                                <div v-else-if="jobHistory.logs.length > 0" class="border rounded bg-white">
+                                    <div class="list-group list-group-flush">
+                                        <div v-for="(log, index) in jobHistory.logs" :key="index" class="list-group-item">
+                                            <div class="d-flex flex-column flex-md-row justify-content-between gap-2">
+                                                <div>
+                                                    <div class="d-flex align-items-center mb-2">
+                                                        <i :class="[statusIconClass(log.status), 'me-2']"></i>
+                                                        <span class="badge me-2" :class="statusBadgeClass(log.status)">{{ log.status ? log.status.toUpperCase() : 'STATUS' }}</span>
+                                                        <span class="badge text-bg-secondary">{{ log.stage || 'stage' }}</span>
+                                                    </div>
+                                                    <p class="mb-1">{{ log.message }}</p>
+                                                    <div v-if="extraDetails(log).length" class="mt-2">
+                                                        <span v-for="detail in extraDetails(log)" :key="detail.key" class="badge text-bg-light text-muted me-2">{{ detail.key }}: {{ detail.value }}</span>
+                                                    </div>
+                                                </div>
+                                                <div class="text-md-end">
+                                                    <small class="text-muted">{{ formatDate(log.timestamp) }}</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="text-center text-muted border rounded py-5 bg-white">
+                                    <i class="bi bi-journal-text me-2"></i>選択されたジョブのログはまだありません。
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
 
         <div class="modal fade" id="promptSettingsModal" tabindex="-1" aria-labelledby="promptSettingsModalLabel" aria-hidden="true">
@@ -209,7 +303,20 @@
                     promptText: '',
                     isPromptLoading: false,
                     isPromptSaving: false,
-                    promptFeedback: null
+                    promptFeedback: null,
+                    jobHistory: {
+                        jobs: [],
+                        selectedJobId: '',
+                        selectedJobInfo: {
+                            original_filename: '',
+                            created_at: ''
+                        },
+                        logs: [],
+                        isJobsLoading: false,
+                        isLogsLoading: false,
+                        jobsError: '',
+                        logsError: ''
+                    }
                 };
             },
             methods: {
@@ -274,6 +381,7 @@
                         };
                     } finally {
                         this.isLoading = false;
+                        this.fetchJobList();
                     }
                 },
                 downloadJSON() {
@@ -352,6 +460,143 @@
                     } finally {
                         this.isPromptSaving = false;
                     }
+                },
+                async showJobHistory(event) {
+                    if (event) {
+                        event.preventDefault();
+                    }
+                    await this.fetchJobList();
+                    this.$nextTick(() => {
+                        const section = document.getElementById('jobHistory');
+                        if (section) {
+                            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                    });
+                },
+                async fetchJobList() {
+                    if (this.jobHistory.isJobsLoading) {
+                        return;
+                    }
+                    this.jobHistory.isJobsLoading = true;
+                    this.jobHistory.jobsError = '';
+                    this.jobHistory.logsError = '';
+                    try {
+                        const response = await axios.get('/api/jobs');
+                        const jobs = Array.isArray(response.data?.jobs) ? response.data.jobs : [];
+                        this.jobHistory.jobs = jobs;
+                        if (jobs.length === 0) {
+                            this.jobHistory.selectedJobId = '';
+                            this.jobHistory.selectedJobInfo = {
+                                original_filename: '',
+                                created_at: ''
+                            };
+                            this.jobHistory.logs = [];
+                            return;
+                        }
+                        const currentJobId = this.jobHistory.selectedJobId;
+                        const hasSelected =
+                            currentJobId && jobs.some((job) => job.job_id === currentJobId);
+                        const targetJobId = hasSelected ? currentJobId : jobs[0].job_id;
+                        await this.fetchJobLogs(targetJobId);
+                    } catch (error) {
+                        console.error('ジョブ履歴の取得に失敗しました:', error);
+                        const message =
+                            error.response?.data?.error || error.message || 'ジョブ履歴の取得に失敗しました。';
+                        this.jobHistory.jobsError = message;
+                    } finally {
+                        this.jobHistory.isJobsLoading = false;
+                    }
+                },
+                async selectJob(jobId) {
+                    if (!jobId) {
+                        return;
+                    }
+                    await this.fetchJobLogs(jobId);
+                },
+                async fetchJobLogs(jobId) {
+                    if (!jobId) {
+                        this.jobHistory.selectedJobId = '';
+                        this.jobHistory.logs = [];
+                        this.jobHistory.selectedJobInfo = {
+                            original_filename: '',
+                            created_at: ''
+                        };
+                        return;
+                    }
+                    this.jobHistory.isLogsLoading = true;
+                    this.jobHistory.logsError = '';
+                    try {
+                        const response = await axios.get(`/api/jobs/${encodeURIComponent(jobId)}/logs`);
+                        const payload = response.data || {};
+                        this.jobHistory.selectedJobId = payload.job_id || jobId;
+                        this.jobHistory.logs = Array.isArray(payload.logs) ? payload.logs : [];
+                        this.jobHistory.selectedJobInfo = {
+                            original_filename: payload.original_filename || '',
+                            created_at: payload.created_at || ''
+                        };
+                    } catch (error) {
+                        console.error('ジョブログの取得に失敗しました:', error);
+                        const message =
+                            error.response?.data?.error || error.message || 'ジョブログの取得に失敗しました。';
+                        this.jobHistory.logsError = message;
+                    } finally {
+                        this.jobHistory.isLogsLoading = false;
+                    }
+                },
+                refreshJobHistory() {
+                    this.fetchJobList();
+                },
+                formatDate(isoString) {
+                    if (!isoString) {
+                        return '日時情報なし';
+                    }
+                    const date = new Date(isoString);
+                    if (Number.isNaN(date.getTime())) {
+                        return isoString;
+                    }
+                    return date.toLocaleString('ja-JP');
+                },
+                statusBadgeClass(status) {
+                    const normalized = (status || '').toString().toLowerCase();
+                    if (normalized === 'success') {
+                        return 'text-bg-success';
+                    }
+                    if (normalized === 'error') {
+                        return 'text-bg-danger';
+                    }
+                    if (normalized === 'info') {
+                        return 'text-bg-info text-dark';
+                    }
+                    return 'text-bg-secondary';
+                },
+                statusIconClass(status) {
+                    const normalized = (status || '').toString().toLowerCase();
+                    if (normalized === 'success') {
+                        return 'bi bi-check-circle-fill text-success';
+                    }
+                    if (normalized === 'error') {
+                        return 'bi bi-exclamation-triangle-fill text-danger';
+                    }
+                    if (normalized === 'info') {
+                        return 'bi bi-info-circle-fill text-primary';
+                    }
+                    return 'bi bi-circle text-secondary';
+                },
+                extraDetails(log) {
+                    if (!log || typeof log !== 'object') {
+                        return [];
+                    }
+                    const omitKeys = new Set([
+                        'timestamp',
+                        'job_id',
+                        'stage',
+                        'status',
+                        'message',
+                        'original_filename'
+                    ]);
+                    return Object.keys(log)
+                        .filter((key) => !omitKeys.has(key))
+                        .map((key) => ({ key, value: log[key] }));
                 }
             }
         }).mount('#app');
