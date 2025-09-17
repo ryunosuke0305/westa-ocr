@@ -23,11 +23,25 @@ LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_PROMPT_TEMPLATE = (
-    "You are an OCR assistant. Extract structured order data from the PDF "
-    "named '{filename}'. Return an array of JSON objects using the keys: "
-    "pdf_id, delivery_location, customer_name, customer_order_number, order_date, "
-    "shipping_date, customer_delivery_date, customer_item_code, internal_item_code, "
-    "product_name, quantity, unit, notes. Use ISO formatted dates and numbers."
+    "You are an OCR assistant. Extract structured order data from the PDF named "
+    "'{filename}'. Respond in pure JSON (no markdown) that strictly matches the "
+    "following schema. Each element of the array is an object that must include "
+    "ALL of these keys (Japanese, case sensitive):\n"
+    "- PDFのID (string): Identifier for the page or document.\n"
+    "- 納入場所 (string).\n"
+    "- 得意先 (string).\n"
+    "- 得意先注文番号 (string).\n"
+    "- 受注日 (string, ISO-8601 date).\n"
+    "- 出荷予定日 (string, ISO-8601 date).\n"
+    "- 顧客納期 (string, ISO-8601 date).\n"
+    "- 得意先品目コード (string).\n"
+    "- 自社品目コード (string).\n"
+    "- 受注商品名称 (string).\n"
+    "- 受注数 (number, do not quote).\n"
+    "- 単位 (string).\n"
+    "- 受注記事 (string).\n"
+    "Use empty strings when information is missing, except set 受注数 to 0 when "
+    "the quantity is unknown. Do not include any extra keys or commentary."
 )
 
 
@@ -43,26 +57,66 @@ class OCRResult:
     customer_item_code: str
     internal_item_code: str
     product_name: str
-    quantity: str
+    quantity: float
     unit: str
     notes: str
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "pdf_id": self.pdf_id,
-            "delivery_location": self.delivery_location,
-            "customer_name": self.customer_name,
-            "customer_order_number": self.customer_order_number,
-            "order_date": self.order_date,
-            "shipping_date": self.shipping_date,
-            "customer_delivery_date": self.customer_delivery_date,
-            "customer_item_code": self.customer_item_code,
-            "internal_item_code": self.internal_item_code,
-            "product_name": self.product_name,
-            "quantity": self.quantity,
-            "unit": self.unit,
-            "notes": self.notes,
+            "PDFのID": self.pdf_id,
+            "納入場所": self.delivery_location,
+            "得意先": self.customer_name,
+            "得意先注文番号": self.customer_order_number,
+            "受注日": self.order_date,
+            "出荷予定日": self.shipping_date,
+            "顧客納期": self.customer_delivery_date,
+            "得意先品目コード": self.customer_item_code,
+            "自社品目コード": self.internal_item_code,
+            "受注商品名称": self.product_name,
+            "受注数": float(self.quantity),
+            "単位": self.unit,
+            "受注記事": self.notes,
         }
+
+
+STRUCTURED_OUTPUT_SCHEMA = None
+if genai_types is not None:
+    STRUCTURED_OUTPUT_SCHEMA = genai_types.Schema(
+        type=genai_types.Type.ARRAY,
+        items=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "PDFのID": genai_types.Schema(type=genai_types.Type.STRING),
+                "納入場所": genai_types.Schema(type=genai_types.Type.STRING),
+                "得意先": genai_types.Schema(type=genai_types.Type.STRING),
+                "得意先注文番号": genai_types.Schema(type=genai_types.Type.STRING),
+                "受注日": genai_types.Schema(type=genai_types.Type.STRING),
+                "出荷予定日": genai_types.Schema(type=genai_types.Type.STRING),
+                "顧客納期": genai_types.Schema(type=genai_types.Type.STRING),
+                "得意先品目コード": genai_types.Schema(type=genai_types.Type.STRING),
+                "自社品目コード": genai_types.Schema(type=genai_types.Type.STRING),
+                "受注商品名称": genai_types.Schema(type=genai_types.Type.STRING),
+                "受注数": genai_types.Schema(type=genai_types.Type.NUMBER),
+                "単位": genai_types.Schema(type=genai_types.Type.STRING),
+                "受注記事": genai_types.Schema(type=genai_types.Type.STRING),
+            },
+            required=[
+                "PDFのID",
+                "納入場所",
+                "得意先",
+                "得意先注文番号",
+                "受注日",
+                "出荷予定日",
+                "顧客納期",
+                "得意先品目コード",
+                "自社品目コード",
+                "受注商品名称",
+                "受注数",
+                "単位",
+                "受注記事",
+            ],
+        ),
+    )
 
 
 class OCRService:
@@ -113,6 +167,7 @@ class OCRService:
         generate_config = genai_types.GenerateContentConfig(
             thinking_config=genai_types.ThinkingConfig(thinking_budget=-1),
             response_mime_type="application/json",
+            response_schema=STRUCTURED_OUTPUT_SCHEMA,
             http_options=genai_types.HttpOptions(
                 timeout=self._config.request_timeout
             ),
@@ -217,7 +272,7 @@ class OCRService:
                     customer_item_code="",
                     internal_item_code="",
                     product_name="",
-                    quantity="0",
+                    quantity=0.0,
                     unit="",
                     notes="テキストを抽出できませんでした。Gemini APIキーを設定すると高精度の抽出が可能です。",
                 )
@@ -243,7 +298,7 @@ class OCRService:
                     customer_item_code="",
                     internal_item_code="",
                     product_name="",
-                    quantity="0",
+                    quantity=0.0,
                     unit="",
                     notes=snippet,
                 )
@@ -264,12 +319,37 @@ class OCRService:
             customer_item_code="",
             internal_item_code="",
             product_name="",
-            quantity="0",
+            quantity=0.0,
             unit="",
             notes="",
         ).to_dict()
-        normalised = {**defaults, **{k: ("" if v is None else v) for k, v in data.items()}}
-        # Ensure quantity is always serialisable as string to keep frontend simple
-        quantity = normalised.get("quantity", "0")
-        normalised["quantity"] = str(quantity)
+        normalised = dict(defaults)
+        allowed_keys = set(defaults)
+        for key, value in data.items():
+            if key not in allowed_keys:
+                continue
+            if key == "受注数":
+                normalised[key] = OCRService._coerce_quantity(value)
+            else:
+                normalised[key] = "" if value is None else str(value)
+        for key in allowed_keys - {"受注数"}:
+            current = normalised.get(key, "")
+            normalised[key] = "" if current is None else str(current)
+        if "受注数" not in normalised:
+            normalised["受注数"] = 0.0
         return normalised
+
+    @staticmethod
+    def _coerce_quantity(value: Any) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return 0.0
+            try:
+                normalised = stripped.replace(",", "")
+                return float(normalised)
+            except ValueError:
+                return 0.0
+        return 0.0
