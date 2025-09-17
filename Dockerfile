@@ -13,8 +13,8 @@ RUN pip install -r backend/requirements.txt
 COPY backend ./backend
 COPY frontend ./frontend
 
-RUN mkdir -p /data/uploads /data/jobs /data/responses /data/keys
-VOLUME ["/data/uploads", "/data/jobs", "/data/responses", "/data/keys"]
+RUN mkdir -p /data/uploads /data/jobs /data/responses
+VOLUME ["/data/uploads", "/data/jobs", "/data/responses"]
 
 WORKDIR /app/backend
 

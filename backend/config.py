@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 def _read_int(env_name: str, default: int) -> int:
     raw_value = os.getenv(env_name)
@@ -25,11 +27,18 @@ class AppConfig:
     upload_dir: Path
     job_history_dir: Path
     response_history_dir: Path
-    api_key_dir: Path
+
+def _load_env_from_data_root() -> None:
+    """Load environment variables from `/data/.env` if present."""
+    data_root = Path(os.getenv("DATA_ROOT", "/data"))
+    candidate = data_root / ".env"
+    if candidate.is_file():
+        load_dotenv(candidate, override=False)
 
 
 def load_config() -> AppConfig:
     """Load application configuration from the environment."""
+    _load_env_from_data_root()
     max_upload_size_mb = _read_int("MAX_UPLOAD_SIZE_MB", 15)
     data_root = Path(os.getenv("DATA_ROOT", "/data"))
     upload_dir = Path(os.getenv("UPLOAD_DIR", str(data_root / "uploads")))
@@ -37,9 +46,7 @@ def load_config() -> AppConfig:
     response_history_dir = Path(
         os.getenv("RESPONSE_HISTORY_DIR", str(data_root / "responses"))
     )
-    api_key_dir = Path(os.getenv("API_KEY_DIR", str(data_root / "keys")))
-
-    for directory in (upload_dir, job_history_dir, response_history_dir, api_key_dir):
+    for directory in (upload_dir, job_history_dir, response_history_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     return AppConfig(
@@ -50,5 +57,4 @@ def load_config() -> AppConfig:
         upload_dir=upload_dir,
         job_history_dir=job_history_dir,
         response_history_dir=response_history_dir,
-        api_key_dir=api_key_dir,
     )

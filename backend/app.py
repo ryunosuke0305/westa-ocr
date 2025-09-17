@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Dict
+from uuid import uuid4
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from config import load_config
 from ocr_service import OCRService
@@ -49,6 +52,13 @@ def ocr_endpoint():
         return _error_response("ファイルサイズが上限を超えています。", HTTPStatus.BAD_REQUEST)
 
     try:
+        saved_path = _save_upload(file_bytes, upload.filename)
+        LOGGER.info("Saved uploaded file to %s", saved_path)
+    except OSError:
+        LOGGER.exception("Failed to persist uploaded file")
+        return _error_response("ファイルの保存に失敗しました。", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    try:
         results = ocr_service.extract(file_bytes, upload.filename)
     except Exception as exc:  # pragma: no cover - defensive logging
         LOGGER.exception("Failed to run OCR")
@@ -60,6 +70,23 @@ def ocr_endpoint():
 def _error_response(message: str, status: HTTPStatus):
     payload: Dict[str, str] = {"error": message}
     return jsonify(payload), status
+
+
+def _save_upload(file_bytes: bytes, original_filename: str) -> Path:
+    """Persist the uploaded file to the configured directory."""
+    safe_name = secure_filename(original_filename)
+    if not safe_name:
+        suffix = Path(original_filename).suffix
+        safe_name = f"uploaded-file{suffix}" if suffix else "uploaded-file"
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    unique_name = f"{timestamp}-{uuid4().hex}-{safe_name}"
+    destination = config.upload_dir / unique_name
+
+    with open(destination, "wb") as file_obj:
+        file_obj.write(file_bytes)
+
+    return destination
 
 
 @app.route("/", defaults={"path": ""})
