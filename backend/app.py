@@ -4,9 +4,10 @@ from __future__ import annotations
 import logging
 import os
 from http import HTTPStatus
+from pathlib import Path
 from typing import Dict
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from config import load_config
@@ -17,6 +18,9 @@ LOGGER = logging.getLogger(__name__)
 
 config = load_config()
 ocr_service = OCRService(config)
+
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
 app = Flask(__name__)
 CORS(app)
@@ -56,6 +60,34 @@ def ocr_endpoint():
 def _error_response(message: str, status: HTTPStatus):
     payload: Dict[str, str] = {"error": message}
     return jsonify(payload), status
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path: str):
+    """Serve the bundled frontend assets."""
+    if path == "api" or path.startswith("api/"):
+        return _error_response("指定されたパスは存在しません。", HTTPStatus.NOT_FOUND)
+
+    if not FRONTEND_DIR.exists():
+        LOGGER.error("Frontend directory is missing: %%s", FRONTEND_DIR)
+        return (
+            "フロントエンドが利用できません。管理者に問い合わせてください。",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    safe_path = path or "index.html"
+    candidate = FRONTEND_DIR / safe_path
+    if candidate.is_dir():
+        candidate = candidate / "index.html"
+    if not candidate.exists():
+        candidate = FRONTEND_DIR / "index.html"
+
+    try:
+        relative_path = candidate.relative_to(FRONTEND_DIR)
+    except ValueError:
+        return _error_response("指定されたパスは存在しません。", HTTPStatus.NOT_FOUND)
+    return send_from_directory(FRONTEND_DIR, relative_path.as_posix())
 
 
 if __name__ == "__main__":
