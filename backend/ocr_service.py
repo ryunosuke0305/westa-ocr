@@ -13,11 +13,22 @@ from PyPDF2 import PdfReader
 from config import AppConfig
 
 try:  # pragma: no cover - the library may not be installed during CI
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
 except ImportError:  # pragma: no cover
     genai = None  # type: ignore
+    genai_types = None  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
+
+
+DEFAULT_PROMPT_TEMPLATE = (
+    "You are an OCR assistant. Extract structured order data from the PDF "
+    "named '{filename}'. Return an array of JSON objects using the keys: "
+    "pdf_id, delivery_location, customer_name, customer_order_number, order_date, "
+    "shipping_date, customer_delivery_date, customer_item_code, internal_item_code, "
+    "product_name, quantity, unit, notes. Use ISO formatted dates and numbers."
+)
 
 
 @dataclass
@@ -59,22 +70,23 @@ class OCRService:
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
-        self._model = None
-        if config.gemini_api_key and genai is not None:
+        self._prompt_template_path = config.prompt_template_path
+        self._ensure_prompt_template()
+        self._client = None
+        if config.gemini_api_key and genai is not None and genai_types is not None:
             try:
-                genai.configure(api_key=config.gemini_api_key)
-                self._model = genai.GenerativeModel(config.gemini_model)
+                self._client = genai.Client(api_key=config.gemini_api_key)
             except Exception as exc:  # pragma: no cover - defensive logging
-                LOGGER.warning("Failed to initialise Gemini client: %%s", exc)
-                self._model = None
+                LOGGER.warning("Failed to initialise Gemini client: %s", exc)
+                self._client = None
         elif config.gemini_api_key:
             LOGGER.warning(
-                "google-generativeai is not available. Falling back to local extraction."
+                "google-genai is not available. Falling back to local extraction."
             )
 
     def extract(self, file_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
         """Extract structured data from the supplied PDF."""
-        if self._model is not None:
+        if self._client is not None and genai_types is not None:
             try:
                 return self._extract_with_gemini(file_bytes, filename)
             except Exception as exc:  # pragma: no cover - remote API failure
@@ -86,16 +98,29 @@ class OCRService:
     def _extract_with_gemini(
         self, file_bytes: bytes, filename: str
     ) -> List[Dict[str, Any]]:
-        assert self._model is not None  # for type checkers
-        response = self._model.generate_content(
-            [
-                self._prompt_template(filename),
-                {
-                    "mime_type": "application/pdf",
-                    "data": file_bytes,
-                },
-            ],
-            request_options={"timeout": self._config.request_timeout},
+        assert self._client is not None and genai_types is not None  # for type checkers
+        contents = [
+            genai_types.Content(
+                role="user",
+                parts=[
+                    genai_types.Part.from_text(text=self._build_prompt(filename)),
+                    genai_types.Part.from_bytes(
+                        data=file_bytes, mime_type="application/pdf"
+                    ),
+                ],
+            )
+        ]
+        generate_config = genai_types.GenerateContentConfig(
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=-1),
+            response_mime_type="application/json",
+            http_options=genai_types.HttpOptions(
+                timeout=self._config.request_timeout
+            ),
+        )
+        response = self._client.models.generate_content(
+            model=self._config.gemini_model,
+            contents=contents,
+            config=generate_config,
         )
         text = self._extract_text_from_response(response)
         payload = json.loads(text)
@@ -113,6 +138,12 @@ class OCRService:
     def _extract_text_from_response(response: Any) -> str:
         if hasattr(response, "text") and response.text:
             return response.text
+        parts = getattr(response, "parts", None)
+        if parts:
+            for part in parts:
+                text = getattr(part, "text", None)
+                if text:
+                    return text
         # Fallback: inspect candidate parts
         candidates = getattr(response, "candidates", [])
         for candidate in candidates:
@@ -127,15 +158,41 @@ class OCRService:
         raise ValueError("Could not extract text from Gemini response")
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _prompt_template(filename: str) -> str:
-        return (
-            "You are an OCR assistant. Extract structured order data from the PDF "
-            f"named '{filename}'. Return an array of JSON objects using the keys: "
-            "pdf_id, delivery_location, customer_name, customer_order_number, order_date, "
-            "shipping_date, customer_delivery_date, customer_item_code, internal_item_code, "
-            "product_name, quantity, unit, notes. Use ISO formatted dates and numbers."
-        )
+    def get_prompt_template(self) -> str:
+        """Return the current prompt template string."""
+        return self._read_prompt_template()
+
+    def update_prompt_template(self, prompt: str) -> None:
+        """Persist a new prompt template."""
+        self._prompt_template_path.write_text(prompt, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    def _ensure_prompt_template(self) -> None:
+        if not self._prompt_template_path.exists():
+            try:
+                self._prompt_template_path.write_text(
+                    DEFAULT_PROMPT_TEMPLATE, encoding="utf-8"
+                )
+            except OSError as exc:  # pragma: no cover - best effort initialisation
+                LOGGER.warning("プロンプトテンプレートの初期化に失敗しました: %s", exc)
+
+    def _read_prompt_template(self) -> str:
+        try:
+            contents = self._prompt_template_path.read_text(encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - defensive fallback
+            LOGGER.warning("プロンプトテンプレートの読み込みに失敗しました: %s", exc)
+            contents = ""
+        if not contents.strip():
+            return DEFAULT_PROMPT_TEMPLATE
+        return contents
+
+    def _build_prompt(self, filename: str) -> str:
+        template = self._read_prompt_template()
+        try:
+            return template.format(filename=filename)
+        except Exception as exc:  # pragma: no cover - defensive formatting
+            LOGGER.warning("プロンプトの整形に失敗したため生のテンプレートを使用します: %s", exc)
+            return template
 
     # ------------------------------------------------------------------
     def _fallback_extraction(self, file_bytes: bytes, filename: str) -> List[Dict[str, Any]]:

@@ -27,6 +27,7 @@ class AppConfig:
     upload_dir: Path
     job_history_dir: Path
     response_history_dir: Path
+    prompt_template_path: Path
 
 def _load_env_from_data_root() -> None:
     """Load environment variables from `/data/.env` if present."""
@@ -46,15 +47,20 @@ def load_config() -> AppConfig:
     response_history_dir = Path(
         os.getenv("RESPONSE_HISTORY_DIR", str(data_root / "responses"))
     )
+    prompt_template_path = Path(
+        os.getenv("PROMPT_TEMPLATE_PATH", str(data_root / "prompt_template.txt"))
+    )
     for directory in (upload_dir, job_history_dir, response_history_dir):
         directory.mkdir(parents=True, exist_ok=True)
+    prompt_template_path.parent.mkdir(parents=True, exist_ok=True)
 
     return AppConfig(
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-        gemini_model=os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
         max_upload_size=max_upload_size_mb * 1024 * 1024,
         request_timeout=_read_int("OCR_REQUEST_TIMEOUT", 300),
         upload_dir=upload_dir,
         job_history_dir=job_history_dir,
         response_history_dir=response_history_dir,
+        prompt_template_path=prompt_template_path,
     )
