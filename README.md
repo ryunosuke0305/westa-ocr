@@ -7,11 +7,11 @@ Dockerコンテナ上での稼働を前提として設計されています。
 
 ## **2\. システム構成**
 
-* **オーケストレーション**: Docker Compose  
+* **オーケストレーション**: Docker (単一コンテナ)
 * **フロントエンド**:  
   * **フレームワーク**: Vue.js 3 (CDN経由)  
   * **UI**: Bootstrap 5  
-  * **Webサーバー**: Nginx  
+  * **配信**: Flask による静的ファイル配信
 * **バックエンド**:  
   * **フレームワーク**: Flask (Python)  
   * **AIモデル**: Google Gemini 1.5 Pro  
@@ -48,7 +48,7 @@ Gemini APIを利用して、PDFから以下の項目を抽出します。
 
 ### **前提条件**
 
-* Docker と Docker Compose がインストールされていること。  
+* Docker がインストールされていること。
 * プロジェクトのルートディレクトリに.envファイルを作成し、Gemini APIキーを記述していること。
   * `cp .env.example .env` でひな形をコピーし、値を編集してください。
 
@@ -60,11 +60,20 @@ GEMINI\_API\_KEY="YOUR\_GEMINI\_API\_KEY"
 
 プロジェクトのルートディレクトリで以下のコマンドを実行します。
 
-\# \-d オプションでバックグラウンドで起動  
-docker-compose up \--build \-d
+\# ビルド
+docker build -t westa-ocr .
+
+\# コンテナ起動
+docker run \
+  --env-file .env \
+  -p 8080:8080 \
+  --name westa-ocr \
+  westa-ocr
 
 起動後、Webブラウザで http://localhost:8080 にアクセスしてください。
 
-### **停止コマンド**
+### **停止・削除コマンド**
 
-docker-compose down  
+docker stop westa-ocr
+
+docker rm westa-ocr
