@@ -32,32 +32,23 @@
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg bg-white shadow-sm sticky-top">
-        <div class="container">
-            <a class="navbar-brand text-primary" href="#"><i class="bi bi-stars me-2"></i>Gemini OCR</a>
-            <button class="btn btn-outline-primary d-lg-none" type="button" data-bs-toggle="offcanvas" data-bs-target="#appNavigation" aria-controls="appNavigation" aria-label="ナビゲーションを開く">
+    <nav class="navbar bg-white shadow-sm sticky-top">
+        <div class="container d-flex align-items-center">
+            <button class="btn btn-outline-primary me-3" type="button" data-bs-toggle="offcanvas" data-bs-target="#appNavigation" aria-controls="appNavigation" aria-label="ナビゲーションを開く">
                 <i class="bi bi-list"></i>
             </button>
-            <div class="collapse navbar-collapse d-none d-lg-flex" id="navbarNav">
-                <ul class="navbar-nav ms-auto gap-2">
-                    <li class="nav-item"><a class="nav-link active" href="#app"><i class="bi bi-gear-wide-connected me-1"></i>OCR実行</a></li>
-                    <li class="nav-item"><a class="nav-link" href="#features"><i class="bi bi-lightbulb me-1"></i>機能紹介</a></li>
-                    <li class="nav-item"><a class="nav-link" href="#support"><i class="bi bi-life-preserver me-1"></i>サポート</a></li>
-                </ul>
-            </div>
+            <a class="navbar-brand text-primary mb-0" href="#"><i class="bi bi-stars me-2"></i>Gemini OCR</a>
         </div>
     </nav>
 
-    <div class="offcanvas offcanvas-end" tabindex="-1" id="appNavigation" aria-labelledby="appNavigationLabel">
+    <div class="offcanvas offcanvas-start" tabindex="-1" id="appNavigation" aria-labelledby="appNavigationLabel">
         <div class="offcanvas-header border-bottom">
             <h5 class="offcanvas-title" id="appNavigationLabel"><i class="bi bi-list-task me-2"></i>メニュー</h5>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="閉じる"></button>
         </div>
         <div class="offcanvas-body d-flex flex-column">
             <ul class="navbar-nav flex-grow-1 gap-2">
-                <li class="nav-item"><a class="nav-link" data-bs-dismiss="offcanvas" href="#app"><i class="bi bi-gear-wide-connected me-2"></i>OCR実行</a></li>
-                <li class="nav-item"><a class="nav-link" data-bs-dismiss="offcanvas" href="#features"><i class="bi bi-lightbulb me-2"></i>機能紹介</a></li>
-                <li class="nav-item"><a class="nav-link" data-bs-dismiss="offcanvas" href="#support"><i class="bi bi-life-preserver me-2"></i>サポート</a></li>
+                <li class="nav-item"><a class="nav-link active" data-bs-dismiss="offcanvas" href="#app"><i class="bi bi-gear-wide-connected me-2"></i>OCR実行</a></li>
             </ul>
             <div class="small text-muted border-top pt-3">
                 <p class="mb-1"><i class="bi bi-cloud-arrow-up"></i> PDFの自動抽出をさらに効率化。</p>
@@ -145,48 +136,6 @@
             </div>
         </div>
     </div>
-
-    <section class="bg-white py-5 mt-5" id="features">
-        <div class="container">
-            <div class="row g-4 align-items-center">
-                <div class="col-lg-6">
-                    <h3 class="mb-3 text-primary"><i class="bi bi-lightbulb"></i> 特徴</h3>
-                    <p class="text-muted">Gemini 1.5 ProのStructured Outputを活用し、伝票から必要な項目を高精度で抽出します。PDFのページ数が多くても、並列処理でスピーディーに結果を取得できます。</p>
-                </div>
-                <div class="col-lg-6">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body">
-                            <h5 class="card-title text-primary">将来の拡張性</h5>
-                            <p class="card-text">ナビゲーションメニューはオフキャンバスで実装されており、機能ページを追加する場合もレイアウトを崩さずにメニュー項目を増やせます。</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section class="py-5" id="support">
-        <div class="container">
-            <div class="row g-4">
-                <div class="col-lg-6">
-                    <div class="card border-0 shadow-sm h-100">
-                        <div class="card-body">
-                            <h5 class="card-title text-primary"><i class="bi bi-life-preserver me-2"></i>サポート</h5>
-                            <p class="card-text">利用に関するお問い合わせは管理者までご連絡ください。ログや履歴機能の追加など、今後のカスタマイズにも柔軟に対応できる構造を採用しています。</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-lg-6">
-                    <div class="card border-0 shadow-sm h-100">
-                        <div class="card-body">
-                            <h5 class="card-title text-primary"><i class="bi bi-shield-check me-2"></i>セキュリティ</h5>
-                            <p class="card-text">アップロードされたファイルは処理後に破棄され、APIキーはサーバー側で安全に管理されます。単一のDockerコンテナ構成でも環境変数を明確に制御しています。</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
 
     <footer class="bg-white py-4 border-top mt-5">
         <div class="container text-center text-muted small">
