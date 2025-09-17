@@ -50,6 +50,7 @@ Gemini APIを利用して、PDFから以下の項目を抽出します。
 
 * Docker と Docker Compose がインストールされていること。  
 * プロジェクトのルートディレクトリに.envファイルを作成し、Gemini APIキーを記述していること。
+  * `cp .env.example .env` でひな形をコピーし、値を編集してください。
 
 **.env ファイルの例:**
 
