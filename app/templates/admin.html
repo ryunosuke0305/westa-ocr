@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>westa-ocr 管理コンソール</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    body {
+      background-color: #f8f9fa;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .form-text-small {
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body class="bg-light">
+  <div id="app" class="container py-4">
+    <header class="mb-4">
+      <h1 class="h3 mb-1">westa-ocr 管理コンソール</h1>
+      <p class="text-muted mb-0">
+        Gemini への手動リクエスト、Webhook の送信、環境変数の管理を行うツールです。
+      </p>
+    </header>
+
+    <section v-if="state.messages.length" class="mb-4">
+      <div
+        v-for="(message, index) in state.messages"
+        :key="`message-${index}`"
+        class="alert"
+        :class="message.success ? 'alert-success' : 'alert-danger'"
+        role="alert"
+      >
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <span class="badge text-bg-secondary text-uppercase mb-2">[[ message.category ]]</span>
+            <h2 class="h6 mb-1">[[ message.summary ]]</h2>
+            <p class="mb-0" v-if="message.detail">[[ message.detail ]]</p>
+          </div>
+          <small class="text-muted ms-3">[[ message.timestamp ]]</small>
+        </div>
+      </div>
+    </section>
+
+    <div class="row g-4">
+      <div class="col-lg-5">
+        <section class="card shadow-sm h-100">
+          <div class="card-header bg-white">
+            <h2 class="h5 mb-0">環境変数の更新</h2>
+          </div>
+          <div class="card-body">
+            <p class="text-muted form-text-small">
+              空欄にすると既定値が利用されます。Relay Token は必須です。
+            </p>
+            <form method="post" action="/admin/settings">
+              <div class="row g-3">
+                <div
+                  class="col-12"
+                  v-for="field in state.configFields"
+                  :key="field.env"
+                >
+                  <label :for="`settings-${field.env}`" class="form-label">[[ field.label ]]</label>
+                  <input
+                    class="form-control"
+                    :type="field.type"
+                    :id="`settings-${field.env}`"
+                    :name="field.env"
+                    :placeholder="field.placeholder"
+                    v-model="forms.settings[field.env]"
+                    autocomplete="off"
+                  />
+                </div>
+              </div>
+              <div class="d-flex justify-content-end mt-3">
+                <button type="submit" class="btn btn-primary">保存して再読み込み</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+      <div class="col-lg-7">
+        <section class="card shadow-sm mb-4">
+          <div class="card-header bg-white">
+            <h2 class="h5 mb-0">Gemini へ手動リクエスト</h2>
+          </div>
+          <div class="card-body">
+            <form method="post" action="/admin/gemini">
+              <div class="mb-3">
+                <label for="gemini-prompt" class="form-label">プロンプト</label>
+                <textarea
+                  id="gemini-prompt"
+                  name="prompt"
+                  class="form-control"
+                  rows="4"
+                  required
+                  v-model="forms.gemini.prompt"
+                ></textarea>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label for="gemini-input-mode" class="form-label">入力データの種類</label>
+                  <select
+                    id="gemini-input-mode"
+                    name="input_mode"
+                    class="form-select"
+                    v-model="forms.gemini.inputMode"
+                  >
+                    <option value="text">テキスト</option>
+                    <option value="base64">Base64</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label for="gemini-mime-type" class="form-label">MIME Type</label>
+                  <input
+                    id="gemini-mime-type"
+                    name="mime_type"
+                    type="text"
+                    class="form-control"
+                    v-model="forms.gemini.mimeType"
+                  />
+                </div>
+              </div>
+              <div class="mb-3 mt-3">
+                <label for="gemini-content" class="form-label">入力データ</label>
+                <textarea
+                  id="gemini-content"
+                  name="content"
+                  class="form-control"
+                  rows="5"
+                  v-model="forms.gemini.content"
+                ></textarea>
+              </div>
+              <div class="mb-3">
+                <label for="gemini-masters" class="form-label">マスター情報(JSON)</label>
+                <textarea
+                  id="gemini-masters"
+                  name="masters"
+                  class="form-control"
+                  rows="4"
+                  v-model="forms.gemini.masters"
+                ></textarea>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label for="gemini-model" class="form-label">モデル</label>
+                  <input
+                    id="gemini-model"
+                    name="model"
+                    type="text"
+                    class="form-control"
+                    :placeholder="`既定値: ${state.defaults.geminiModel}`"
+                    v-model="forms.gemini.model"
+                  />
+                </div>
+                <div class="col-md-6">
+                  <label for="gemini-temperature" class="form-label">Temperature</label>
+                  <input
+                    id="gemini-temperature"
+                    name="temperature"
+                    type="text"
+                    class="form-control"
+                    v-model="forms.gemini.temperature"
+                  />
+                </div>
+                <div class="col-md-4">
+                  <label for="gemini-top-p" class="form-label">Top P</label>
+                  <input
+                    id="gemini-top-p"
+                    name="top_p"
+                    type="text"
+                    class="form-control"
+                    v-model="forms.gemini.topP"
+                  />
+                </div>
+                <div class="col-md-4">
+                  <label for="gemini-top-k" class="form-label">Top K</label>
+                  <input
+                    id="gemini-top-k"
+                    name="top_k"
+                    type="text"
+                    class="form-control"
+                    v-model="forms.gemini.topK"
+                  />
+                </div>
+                <div class="col-md-4">
+                  <label for="gemini-max-output" class="form-label">最大出力トークン</label>
+                  <input
+                    id="gemini-max-output"
+                    name="max_output_tokens"
+                    type="text"
+                    class="form-control"
+                    v-model="forms.gemini.maxOutputTokens"
+                  />
+                </div>
+              </div>
+              <div class="d-flex justify-content-end mt-3">
+                <button type="submit" class="btn btn-primary">Gemini へ送信</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="card shadow-sm">
+          <div class="card-header bg-white">
+            <h2 class="h5 mb-0">Webhook を手動送信</h2>
+          </div>
+          <div class="card-body">
+            <form method="post" action="/admin/webhook">
+              <div class="mb-3">
+                <label for="webhook-url" class="form-label">URL</label>
+                <input
+                  id="webhook-url"
+                  name="url"
+                  type="url"
+                  class="form-control"
+                  required
+                  v-model="forms.webhook.url"
+                />
+              </div>
+              <div class="mb-3">
+                <label for="webhook-payload" class="form-label">JSON ペイロード</label>
+                <textarea
+                  id="webhook-payload"
+                  name="payload"
+                  class="form-control"
+                  rows="5"
+                  required
+                  v-model="forms.webhook.payload"
+                ></textarea>
+              </div>
+              <div class="d-flex justify-content-end">
+                <button type="submit" class="btn btn-primary">Webhook を送信</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <section class="card shadow-sm mt-4">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">Gemini リクエスト履歴</h2>
+        <span class="text-muted small">最大 10 件を表示</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-0" v-if="!state.geminiLogs.length">履歴はまだありません。</p>
+        <div class="accordion" id="geminiLogs" v-else>
+          <div
+            class="accordion-item"
+            v-for="(log, index) in state.geminiLogs"
+            :key="`gemini-${index}`"
+          >
+            <h2 class="accordion-header" :id="`gemini-heading-${index}`">
+              <button
+                class="accordion-button collapsed"
+                type="button"
+                data-bs-toggle="collapse"
+                :data-bs-target="`#gemini-body-${index}`"
+                aria-expanded="false"
+                :aria-controls="`gemini-body-${index}`"
+              >
+                <span class="badge me-3" :class="log.success ? 'text-bg-success' : 'text-bg-danger'">
+                  [[ log.success ? '成功' : '失敗' ]]
+                </span>
+                <span class="me-3 fw-semibold">[[ log.model ]]</span>
+                <span class="me-3 text-muted">[[ log.mimeType ]]</span>
+                <span class="text-muted small">[[ log.timestamp ]]</span>
+              </button>
+            </h2>
+            <div
+              :id="`gemini-body-${index}`"
+              class="accordion-collapse collapse"
+              :aria-labelledby="`gemini-heading-${index}`"
+              data-bs-parent="#geminiLogs"
+            >
+              <div class="accordion-body">
+                <dl class="row mb-0">
+                  <dt class="col-sm-3">プロンプト</dt>
+                  <dd class="col-sm-9">[[ log.promptPreview ]]</dd>
+                  <dt class="col-sm-3">テキスト</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.responseText || '(なし)' ]]</pre></dd>
+                  <dt class="col-sm-3">メタ情報</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ formatJson(log.meta) ]]</pre></dd>
+                  <dt class="col-sm-3">エラー</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.error || '(なし)' ]]</pre></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card shadow-sm mt-4 mb-5">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">Webhook 履歴</h2>
+        <span class="text-muted small">最大 10 件を表示</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-0" v-if="!state.webhookLogs.length">履歴はまだありません。</p>
+        <div class="accordion" id="webhookLogs" v-else>
+          <div
+            class="accordion-item"
+            v-for="(log, index) in state.webhookLogs"
+            :key="`webhook-${index}`"
+          >
+            <h2 class="accordion-header" :id="`webhook-heading-${index}`">
+              <button
+                class="accordion-button collapsed"
+                type="button"
+                data-bs-toggle="collapse"
+                :data-bs-target="`#webhook-body-${index}`"
+                aria-expanded="false"
+                :aria-controls="`webhook-body-${index}`"
+              >
+                <span class="badge me-3" :class="log.success ? 'text-bg-success' : 'text-bg-danger'">
+                  [[ log.success ? '成功' : '失敗' ]]
+                </span>
+                <span class="me-3 fw-semibold text-break">[[ log.url ]]</span>
+                <span class="text-muted small">HTTP [[ log.statusCode !== null && log.statusCode !== undefined ? log.statusCode : '-' ]]</span>
+                <span class="text-muted small ms-3">[[ log.timestamp ]]</span>
+              </button>
+            </h2>
+            <div
+              :id="`webhook-body-${index}`"
+              class="accordion-collapse collapse"
+              :aria-labelledby="`webhook-heading-${index}`"
+              data-bs-parent="#webhookLogs"
+            >
+              <div class="accordion-body">
+                <dl class="row mb-0">
+                  <dt class="col-sm-3">ペイロード</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.payload ]]</pre></dd>
+                  <dt class="col-sm-3">応答</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.responseText || '(なし)' ]]</pre></dd>
+                  <dt class="col-sm-3">エラー</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.error || '(なし)' ]]</pre></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    const initialState = {{ dashboard | tojson }};
+
+    const app = Vue.createApp({
+      data() {
+        const settings = {};
+        for (const field of initialState.configFields) {
+          settings[field.env] = field.value || '';
+        }
+        return {
+          state: initialState,
+          forms: {
+            settings,
+            gemini: {
+              prompt: '',
+              inputMode: 'text',
+              content: '',
+              mimeType: initialState.defaults.mimeType,
+              masters: initialState.defaults.masters,
+              model: '',
+              temperature: '',
+              topP: '',
+              topK: '',
+              maxOutputTokens: '',
+            },
+            webhook: {
+              url: '',
+              payload: initialState.defaults.webhookPayload,
+            },
+          },
+        };
+      },
+      methods: {
+        formatJson(value) {
+          if (!value) {
+            return '(なし)';
+          }
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (error) {
+            return String(value);
+          }
+        },
+      },
+    });
+
+    app.config.compilerOptions.delimiters = ['[[', ']]'];
+    app.mount('#app');
+  </script>
+</body>
+</html>

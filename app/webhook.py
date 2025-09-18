@@ -21,7 +21,7 @@ class WebhookDispatcher:
     def close(self) -> None:
         self._client.close()
 
-    def send(self, url: str, payload: Dict) -> None:
+    def send(self, url: str, payload: Dict) -> httpx.Response:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -32,6 +32,7 @@ class WebhookDispatcher:
         )
         response = self._client.post(url, content=raw, headers=headers)
         response.raise_for_status()
+        return response
 
 
 __all__ = ["WebhookDispatcher"]
