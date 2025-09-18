@@ -102,6 +102,7 @@
                   rows="4"
                   required
                   v-model="forms.gemini.prompt"
+                  placeholder="例: 添付の発注書から取引先名と合計金額を抽出してください"
                 ></textarea>
               </div>
               <div class="row g-3">
@@ -125,6 +126,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.mimeType"
+                    placeholder="例: application/pdf"
                   />
                 </div>
               </div>
@@ -136,6 +138,7 @@
                   class="form-control"
                   rows="5"
                   v-model="forms.gemini.content"
+                  placeholder="例: PDF ファイルを Base64 変換した文字列、または解析対象テキスト"
                 ></textarea>
               </div>
               <div class="mb-3">
@@ -146,6 +149,7 @@
                   class="form-control"
                   rows="4"
                   v-model="forms.gemini.masters"
+                  placeholder='例: {"shipCsv": "https://...", "itemCsv": "https://..."}'
                 ></textarea>
               </div>
               <div class="row g-3">
@@ -168,6 +172,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.temperature"
+                    placeholder="0.0 から 1.0 の範囲"
                   />
                 </div>
                 <div class="col-md-4">
@@ -178,6 +183,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.topP"
+                    placeholder="0.0 から 1.0 の範囲"
                   />
                 </div>
                 <div class="col-md-4">
@@ -188,6 +194,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.topK"
+                    placeholder="例: 40"
                   />
                 </div>
                 <div class="col-md-4">
@@ -198,6 +205,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.maxOutputTokens"
+                    placeholder="例: 8192"
                   />
                 </div>
               </div>
@@ -223,6 +231,7 @@
                   class="form-control"
                   required
                   v-model="forms.webhook.url"
+                  placeholder="例: https://example.com/webhook"
                 />
               </div>
               <div class="mb-3">
@@ -234,6 +243,7 @@
                   rows="5"
                   required
                   v-model="forms.webhook.payload"
+                  placeholder='例: {"event":"JOB_SUMMARY","jobId":"..."}'
                 ></textarea>
               </div>
               <div class="d-flex justify-content-end">
@@ -244,6 +254,115 @@
         </section>
       </div>
     </div>
+
+    <section class="card shadow-sm mt-4">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">ProcessOrder_test_relay リクエスト履歴</h2>
+        <span class="text-muted small">最大 50 件を表示</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-0" v-if="!state.relayRequestLogs.length">履歴はまだありません。</p>
+        <div class="accordion" id="relayRequestLogs" v-else>
+          <div
+            class="accordion-item"
+            v-for="(log, index) in state.relayRequestLogs"
+            :key="`relay-request-${index}`"
+          >
+            <h2 class="accordion-header" :id="`relay-request-heading-${index}`">
+              <button
+                class="accordion-button collapsed"
+                type="button"
+                data-bs-toggle="collapse"
+                :data-bs-target="`#relay-request-body-${index}`"
+                aria-expanded="false"
+                :aria-controls="`relay-request-body-${index}`"
+              >
+                <span class="badge me-3" :class="log.status === 'ERROR' ? 'text-bg-danger' : 'text-bg-primary'">
+                  [[ log.status ]]
+                </span>
+                <span class="me-3 fw-semibold text-break">Job [[ log.jobId ]]</span>
+                <span class="me-3 text-muted text-break">Order [[ log.orderId ]]</span>
+                <span class="text-muted small ms-auto">[[ log.timestamp ]]</span>
+              </button>
+            </h2>
+            <div
+              :id="`relay-request-body-${index}`"
+              class="accordion-collapse collapse"
+              :aria-labelledby="`relay-request-heading-${index}`"
+              data-bs-parent="#relayRequestLogs"
+            >
+              <div class="accordion-body">
+                <dl class="row mb-0">
+                  <dt class="col-sm-3">Idempotency Key</dt>
+                  <dd class="col-sm-9 text-break">[[ log.idempotencyKey ]]</dd>
+                  <dt class="col-sm-3">メッセージ</dt>
+                  <dd class="col-sm-9">[[ log.message || '(なし)' ]]</dd>
+                  <dt class="col-sm-3">リクエスト</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.payload ]]</pre></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card shadow-sm mt-4">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">自動 Webhook 送信履歴</h2>
+        <span class="text-muted small">最大 50 件を表示</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-0" v-if="!state.relayWebhookLogs.length">履歴はまだありません。</p>
+        <div class="accordion" id="relayWebhookLogs" v-else>
+          <div
+            class="accordion-item"
+            v-for="(log, index) in state.relayWebhookLogs"
+            :key="`relay-webhook-${index}`"
+          >
+            <h2 class="accordion-header" :id="`relay-webhook-heading-${index}`">
+              <button
+                class="accordion-button collapsed"
+                type="button"
+                data-bs-toggle="collapse"
+                :data-bs-target="`#relay-webhook-body-${index}`"
+                aria-expanded="false"
+                :aria-controls="`relay-webhook-body-${index}`"
+              >
+                <span class="badge me-3" :class="log.success ? 'text-bg-success' : 'text-bg-danger'">
+                  [[ log.success ? '成功' : '失敗' ]]
+                </span>
+                <span class="badge text-bg-secondary me-3">[[ log.event ]]</span>
+                <span class="me-3 fw-semibold text-break">[[ log.url ]]</span>
+                <span class="text-muted small">HTTP [[ log.statusCode !== null && log.statusCode !== undefined ? log.statusCode : '-' ]]</span>
+                <span class="text-muted small ms-3">[[ log.timestamp ]]</span>
+              </button>
+            </h2>
+            <div
+              :id="`relay-webhook-body-${index}`"
+              class="accordion-collapse collapse"
+              :aria-labelledby="`relay-webhook-heading-${index}`"
+              data-bs-parent="#relayWebhookLogs"
+            >
+              <div class="accordion-body">
+                <dl class="row mb-0">
+                  <dt class="col-sm-3">Job ID</dt>
+                  <dd class="col-sm-9 text-break">[[ log.jobId ]]</dd>
+                  <dt class="col-sm-3">Order ID</dt>
+                  <dd class="col-sm-9 text-break">[[ log.orderId ]]</dd>
+                  <dt class="col-sm-3">ペイロード</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.payload ]]</pre></dd>
+                  <dt class="col-sm-3">応答</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.responseText || '(なし)' ]]</pre></dd>
+                  <dt class="col-sm-3">エラー</dt>
+                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.error || '(なし)' ]]</pre></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <section class="card shadow-sm mt-4">
       <div class="card-header bg-white d-flex justify-content-between align-items-center">

@@ -54,6 +54,7 @@ def create_application() -> FastAPI:
         timeout=settings.request_timeout,
     )
     webhook_dispatcher = WebhookDispatcher(settings.webhook_timeout)
+    admin_state = AdminState()
     worker = JobWorker(
         repository=repository,
         job_queue=job_queue,
@@ -61,6 +62,7 @@ def create_application() -> FastAPI:
         gemini_client=gemini_client,
         webhook_dispatcher=webhook_dispatcher,
         idle_sleep=settings.worker_idle_sleep,
+        admin_state=admin_state,
     )
 
     app = FastAPI(title="westa-ocr relay", version="0.1.0")
@@ -79,7 +81,7 @@ def create_application() -> FastAPI:
     app.state.gemini_client = gemini_client
     app.state.webhook_dispatcher = webhook_dispatcher
     app.state.worker = worker
-    app.state.admin_state = AdminState()
+    app.state.admin_state = admin_state
 
     register_routes(app)
     register_admin_routes(app)
@@ -110,8 +112,12 @@ def register_routes(app: FastAPI) -> None:
     ) -> JobResponse | Response:
         repository: JobRepository = request.app.state.repository
         job_queue: queue.Queue[str] = request.app.state.job_queue
+        admin_state: AdminState = request.app.state.admin_state
 
         idempotency_key = payload.idempotency_key or payload.order_id
+        request_snapshot = json.dumps(
+            payload.model_dump(by_alias=True), ensure_ascii=False, indent=2, sort_keys=True
+        )
         existing = repository.find_job_by_idempotency(idempotency_key)
         if existing:
             status_value = existing["status"]
@@ -122,6 +128,14 @@ def register_routes(app: FastAPI) -> None:
             LOGGER.info(
                 "Job already registered for idempotency key",
                 extra={"jobId": existing["job_id"], "idempotencyKey": idempotency_key},
+            )
+            admin_state.add_relay_request_log(
+                job_id=existing["job_id"],
+                order_id=payload.order_id,
+                idempotency_key=idempotency_key,
+                status=job_status.value,
+                payload=request_snapshot,
+                message="既存のジョブを返却しました",
             )
             return JobResponse(
                 job_id=existing["job_id"],
@@ -146,10 +160,26 @@ def register_routes(app: FastAPI) -> None:
             )
         except sqlite3.IntegrityError as exc:
             LOGGER.exception("Integrity error while inserting job", extra={"jobId": job_id})
+            admin_state.add_relay_request_log(
+                job_id=job_id,
+                order_id=payload.order_id,
+                idempotency_key=idempotency_key,
+                status="ERROR",
+                payload=request_snapshot,
+                message=f"Integrity error: {exc}",
+            )
             return _error_response("ALREADY_EXISTS", "Job already exists", status.HTTP_409_CONFLICT)
 
         repository.mark_enqueued(job_id)
         job_queue.put(job_id)
+        admin_state.add_relay_request_log(
+            job_id=job_id,
+            order_id=payload.order_id,
+            idempotency_key=idempotency_key,
+            status=JobStatus.RECEIVED.value,
+            payload=request_snapshot,
+            message="新規ジョブを登録しました",
+        )
         return JobResponse(job_id=job_id, correlation_id=payload.order_id, status=JobStatus.RECEIVED)
 
     @app.get(

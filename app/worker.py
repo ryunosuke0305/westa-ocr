@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
@@ -14,6 +14,9 @@ from .models import JobStatus
 from .pdf_utils import PagePayload, split_pdf
 from .repository import JobRepository
 from .webhook import WebhookDispatcher
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from .admin import AdminState
 
 LOGGER = get_logger(__name__)
 
@@ -30,6 +33,7 @@ class JobWorker(threading.Thread):
         gemini_client: GeminiClient,
         webhook_dispatcher: WebhookDispatcher,
         idle_sleep: float,
+        admin_state: "AdminState | None" = None,
     ) -> None:
         super().__init__(daemon=True)
         self._repository = repository
@@ -38,6 +42,7 @@ class JobWorker(threading.Thread):
         self._gemini = gemini_client
         self._webhook = webhook_dispatcher
         self._idle_sleep = idle_sleep
+        self._admin_state = admin_state
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -192,11 +197,23 @@ class JobWorker(threading.Thread):
             "idempotencyKey": f"{job_row['order_id']}:{page_index}",
         }
         try:
-            self._webhook.send(job_row["webhook_url"], payload)
+            response = self._webhook.send(job_row["webhook_url"], payload)
         except Exception as exc:
             LOGGER.exception(
                 "Failed to dispatch page webhook",
                 extra={"jobId": job_row["job_id"], "pageIndex": page_index},
+            )
+            response = getattr(exc, "response", None)
+            status_code = response.status_code if response is not None else None
+            response_text = response.text if response is not None else None
+            self._log_relay_webhook(
+                job_row,
+                event="PAGE_RESULT",
+                payload=payload,
+                success=False,
+                status_code=status_code,
+                response_text=response_text,
+                error=str(exc),
             )
             # Record the failure so that it surfaces in the summary payload.
             self._repository.record_page_result(
@@ -209,6 +226,15 @@ class JobWorker(threading.Thread):
                 meta=result.meta,
             )
             return f"webhook failed: {exc}"
+        self._log_relay_webhook(
+            job_row,
+            event="PAGE_RESULT",
+            payload=payload,
+            success=True,
+            status_code=response.status_code,
+            response_text=response.text,
+            error=None,
+        )
         return None
 
     def _send_summary(
@@ -233,9 +259,57 @@ class JobWorker(threading.Thread):
         if status is not None:
             payload["status"] = status.value
         try:
-            self._webhook.send(job_row["webhook_url"], payload)
+            response = self._webhook.send(job_row["webhook_url"], payload)
         except Exception as exc:
             LOGGER.exception("Failed to dispatch summary webhook", extra={"jobId": job_row["job_id"]})
+            response = getattr(exc, "response", None)
+            status_code = response.status_code if response is not None else None
+            response_text = response.text if response is not None else None
+            self._log_relay_webhook(
+                job_row,
+                event="JOB_SUMMARY",
+                payload=payload,
+                success=False,
+                status_code=status_code,
+                response_text=response_text,
+                error=str(exc),
+            )
+            return
+        self._log_relay_webhook(
+            job_row,
+            event="JOB_SUMMARY",
+            payload=payload,
+            success=True,
+            status_code=response.status_code,
+            response_text=response.text,
+            error=None,
+        )
+
+    def _log_relay_webhook(
+        self,
+        job_row,
+        *,
+        event: str,
+        payload: Dict,
+        success: bool,
+        status_code: Optional[int],
+        response_text: Optional[str],
+        error: Optional[str],
+    ) -> None:
+        if self._admin_state is None:
+            return
+        payload_text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        self._admin_state.add_relay_webhook_log(
+            job_id=job_row["job_id"],
+            order_id=job_row["order_id"],
+            event=event,
+            url=job_row["webhook_url"],
+            payload=payload_text,
+            success=success,
+            status_code=status_code,
+            response_text=response_text,
+            error=error,
+        )
 
 
 __all__ = ["JobWorker"]
