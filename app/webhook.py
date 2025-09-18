@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Dict
+from typing import Dict, Optional
 
 import httpx
 
@@ -21,11 +21,13 @@ class WebhookDispatcher:
     def close(self) -> None:
         self._client.close()
 
-    def send(self, url: str, payload: Dict) -> httpx.Response:
+    def send(self, url: str, payload: Dict, *, token: Optional[str] = None) -> httpx.Response:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
         }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         LOGGER.info(
             "Dispatching webhook",
             extra={"url": url, "event": payload.get("event"), "jobId": payload.get("jobId")},

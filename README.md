@@ -52,7 +52,8 @@ GAS(doPost) で検証・保存・集計
     "itemCsv": "string (必須, CSV)"        // 品目マスタ（ヘッダ含むCSV）
   },
   "webhook": {
-    "url": "https://script.google.com/... (必須)"
+    "url": "https://script.google.com/... (必須)",
+    "token": "string (必須)"                 // Relay→GAS の Bearer トークン
   },
   "gemini": {
     "model": "string (既定: gemini-2.5-flash)",
@@ -87,6 +88,7 @@ GAS(doPost) で検証・保存・集計
 
 ### 4.1 共通ヘッダ
 - `Content-Type`: `application/json`
+- `Authorization`: `Bearer <WEBHOOK_TOKEN>` （設定時）
 
 ### 4.2 ページごとの結果: `event=PAGE_RESULT`
 ```jsonc

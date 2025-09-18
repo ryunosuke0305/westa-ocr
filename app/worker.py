@@ -196,8 +196,9 @@ class JobWorker(threading.Thread):
             "meta": result.meta,
             "idempotencyKey": f"{job_row['order_id']}:{page_index}",
         }
+        token = job_row["webhook_token"] or None
         try:
-            response = self._webhook.send(job_row["webhook_url"], payload)
+            response = self._webhook.send(job_row["webhook_url"], payload, token=token)
         except Exception as exc:
             LOGGER.exception(
                 "Failed to dispatch page webhook",
@@ -214,6 +215,7 @@ class JobWorker(threading.Thread):
                 status_code=status_code,
                 response_text=response_text,
                 error=str(exc),
+                token=token,
             )
             # Record the failure so that it surfaces in the summary payload.
             self._repository.record_page_result(
@@ -234,6 +236,7 @@ class JobWorker(threading.Thread):
             status_code=response.status_code,
             response_text=response.text,
             error=None,
+            token=token,
         )
         return None
 
@@ -258,8 +261,9 @@ class JobWorker(threading.Thread):
         }
         if status is not None:
             payload["status"] = status.value
+        token = job_row["webhook_token"] or None
         try:
-            response = self._webhook.send(job_row["webhook_url"], payload)
+            response = self._webhook.send(job_row["webhook_url"], payload, token=token)
         except Exception as exc:
             LOGGER.exception("Failed to dispatch summary webhook", extra={"jobId": job_row["job_id"]})
             response = getattr(exc, "response", None)
@@ -273,6 +277,7 @@ class JobWorker(threading.Thread):
                 status_code=status_code,
                 response_text=response_text,
                 error=str(exc),
+                token=token,
             )
             return
         self._log_relay_webhook(
@@ -283,6 +288,7 @@ class JobWorker(threading.Thread):
             status_code=response.status_code,
             response_text=response.text,
             error=None,
+            token=token,
         )
 
     def _log_relay_webhook(
@@ -295,6 +301,7 @@ class JobWorker(threading.Thread):
         status_code: Optional[int],
         response_text: Optional[str],
         error: Optional[str],
+        token: Optional[str],
     ) -> None:
         if self._admin_state is None:
             return
@@ -309,6 +316,7 @@ class JobWorker(threading.Thread):
             status_code=status_code,
             response_text=response_text,
             error=error,
+            token=token,
         )
 
 

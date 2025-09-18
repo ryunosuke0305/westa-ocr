@@ -235,6 +235,18 @@
                 />
               </div>
               <div class="mb-3">
+                <label for="webhook-token" class="form-label">Bearer トークン</label>
+                <input
+                  id="webhook-token"
+                  name="token"
+                  type="text"
+                  class="form-control"
+                  v-model="forms.webhook.token"
+                  placeholder="例: eyJhbGciOi..."
+                />
+                <div class="form-text">指定すると Authorization: Bearer ... ヘッダを付与します。</div>
+              </div>
+              <div class="mb-3">
                 <label for="webhook-payload" class="form-label">JSON ペイロード</label>
                 <textarea
                   id="webhook-payload"
@@ -350,6 +362,8 @@
                   <dd class="col-sm-9 text-break">[[ log.jobId ]]</dd>
                   <dt class="col-sm-3">Order ID</dt>
                   <dd class="col-sm-9 text-break">[[ log.orderId ]]</dd>
+                  <dt class="col-sm-3">Authorization</dt>
+                  <dd class="col-sm-9">[[ log.authorization ? 'Bearer ' + log.authorization : '(なし)' ]]</dd>
                   <dt class="col-sm-3">ペイロード</dt>
                   <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.payload ]]</pre></dd>
                   <dt class="col-sm-3">応答</dt>
@@ -456,6 +470,8 @@
             >
               <div class="accordion-body">
                 <dl class="row mb-0">
+                  <dt class="col-sm-3">Authorization</dt>
+                  <dd class="col-sm-9">[[ log.authorization ? 'Bearer ' + log.authorization : '(なし)' ]]</dd>
                   <dt class="col-sm-3">ペイロード</dt>
                   <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.payload ]]</pre></dd>
                   <dt class="col-sm-3">応答</dt>
@@ -499,6 +515,7 @@
             },
             webhook: {
               url: '',
+              token: initialState.defaults.webhookToken,
               payload: initialState.defaults.webhookPayload,
             },
           },
