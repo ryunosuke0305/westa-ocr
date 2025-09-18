@@ -3,12 +3,6 @@
 本リポジトリのリレーサーバーと連携する Google Apps Script（GAS）のコードを参考情報として保存します。
 
 ```javascript
-/*
- * 以下のコードは、AppSheet からトリガーされる注文書 PDF の処理および
- * リレー経由での Gemeni 呼び出しに対応する Google Apps Script の実装です。
- * 参考情報として保管しており、本リポジトリから直接実行されることはありません。
- */
-
 /**
  * AppSheetからトリガーされ、未処理の注文書PDFをGemini APIで読み込み、
  * スプレッドシートに注文情報と明細情報を記録する。
@@ -227,9 +221,12 @@ function ProcessOrder_test_relay(PROMPT, PATTERN) {
         muteHttpExceptions: true
       };
 
+      console.log(RELAY_URL);
+      console.log(options);
       const resp = UrlFetchApp.fetch(RELAY_URL, options);
       const code = resp.getResponseCode();
       const text = resp.getContentText();
+      console.log(text);
       if (code >= 200 && code < 300) {
         // 受付済みに更新
         sheetOrders.getRange(i + 1, statusIndex + 1).setValue("受付済");
@@ -592,4 +589,5 @@ function generateRandomID() {
   }
   return randomId;
 }
+
 ```
