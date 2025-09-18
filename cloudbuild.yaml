@@ -1,0 +1,58 @@
+steps:
+  - name: 'gcr.io/kaniko-project/executor:latest'
+    args:
+      - '--dockerfile=Dockerfile'
+      - '--context=.'
+      - '--cache=true'
+      - >-
+        --cache-repo=asia-northeast2-docker.pkg.dev/instant-river-361000/cloud-build-cache/westa-ocr-kaniko-cache
+      - >-
+        --destination=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    id: Build
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_SERVICE_NAME
+      - '--platform=managed'
+      - >-
+        --image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - >-
+        --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      - '--region=$_DEPLOY_REGION'
+      - '--quiet'
+
+      # ====== 環境変数の設定 ======
+      - '--set-env-vars=RELAY_TOKEN=replace_me_relay_token'
+      - '--set-env-vars=GEMINI_API_KEY=replace_me_gemini_key'
+      - '--set-env-vars=SQLITE_PATH=/data/relay.db'
+      - '--set-env-vars=TMP_DIR=/data/tmp'
+      - '--set-env-vars=MAX_CONCURRENCY=3'
+      - '--set-env-vars=RATE_LIMIT_RPS=5'
+      - '--set-env-vars=BACKOFF_MAX_RETRIES=5'
+      - '--set-env-vars=BACKOFF_INITIAL_MS=1000'
+
+images:
+  - >-
+    $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _DEPLOY_REGION: asia-northeast2
+  _AR_HOSTNAME: asia-northeast2-docker.pkg.dev
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _AR_PROJECT_ID: instant-river-361000
+  _PLATFORM: managed
+  _SERVICE_NAME: westa-ocr
+  _TRIGGER_ID: 2e97ec6d-7d44-47f0-ba83-6866b35c8e68
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - gcp-cloud-build-deploy-cloud-run-managed
+  - westa-ocr
