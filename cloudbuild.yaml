@@ -10,6 +10,22 @@ steps:
         --destination=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
     id: Build
 
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        echo "Debugging Substitutions:"
+        echo "_AR_HOSTNAME: $_AR_HOSTNAME"
+        echo "_AR_PROJECT_ID: $_AR_PROJECT_ID"
+        echo "_AR_REPOSITORY: $_AR_REPOSITORY"
+        echo "_SERVICE_NAME: $_SERVICE_NAME"
+        echo "COMMIT_SHA: $COMMIT_SHA"
+        echo "REPO_NAME: $REPO_NAME"
+        echo "Full image path from Kaniko: $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA"
+        echo "Full image path from images section: $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA"
+    id: DebugSubstitutions
+
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: gcloud
     args:
