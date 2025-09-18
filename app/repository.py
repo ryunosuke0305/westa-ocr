@@ -40,7 +40,6 @@ class JobRepository:
     def _initialise(self) -> None:
         with self._locked():
             self._create_tables()
-            self._ensure_webhook_token_column()
 
     def _create_tables(self) -> None:
         self._conn.executescript(
@@ -82,77 +81,6 @@ class JobRepository:
             );
             """
         )
-
-    def _ensure_webhook_token_column(self) -> None:
-        def _refresh_columns() -> Dict[str, sqlite3.Row]:
-            cursor = self._conn.execute("PRAGMA table_info(jobs)")
-            return {row["name"]: row for row in cursor.fetchall()}
-
-        columns = _refresh_columns()
-        has_token = "webhook_token" in columns
-        has_secret = "webhook_secret" in columns
-
-        if has_token and has_secret:
-            LOGGER.info(
-                "Applying jobs table migration: dropping legacy webhook_secret column"
-            )
-            self._rebuild_jobs_table(
-                "CASE WHEN (webhook_token IS NOT NULL AND webhook_token <> '') "
-                "THEN webhook_token ELSE webhook_secret END"
-            )
-            columns = _refresh_columns()
-            has_token = "webhook_token" in columns
-            has_secret = "webhook_secret" in columns
-
-        if has_secret:
-            LOGGER.info(
-                "Applying jobs table migration: renaming webhook_secret column to webhook_token"
-            )
-            try:
-                self._conn.execute(
-                    "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
-                )
-            except sqlite3.OperationalError:
-                self._rebuild_jobs_table("webhook_secret")
-            columns = _refresh_columns()
-            has_token = "webhook_token" in columns
-
-        if has_token:
-            token_info = columns["webhook_token"]
-            if token_info["notnull"]:
-                LOGGER.info(
-                    "Applying jobs table migration: dropping NOT NULL constraint from webhook_token column"
-                )
-                self._rebuild_jobs_table("webhook_token")
-            return
-
-        LOGGER.info("Applying jobs table migration: adding webhook_token column")
-        self._conn.execute("ALTER TABLE jobs ADD COLUMN webhook_token TEXT")
-
-    def _rebuild_jobs_table(self, webhook_token_expr: str) -> None:
-        LOGGER.info("Falling back to table recreation for webhook column migration")
-        self._conn.execute("PRAGMA foreign_keys=OFF")
-        try:
-            self._conn.execute("ALTER TABLE jobs RENAME TO jobs_old")
-            self._create_tables()
-            query = f"""
-                INSERT INTO jobs (
-                    job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, webhook_token, gemini_json, options_json,
-                    idempotency_key, status, last_error, total_pages,
-                    processed_pages, skipped_pages, created_at, updated_at
-                )
-                SELECT
-                    job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, {webhook_token_expr} AS webhook_token, gemini_json, options_json,
-                    idempotency_key, status, last_error, total_pages,
-                    processed_pages, skipped_pages, created_at, updated_at
-                FROM jobs_old
-            """
-            self._conn.execute(query)
-            self._conn.execute("DROP TABLE jobs_old")
-        finally:
-            self._conn.execute("PRAGMA foreign_keys=ON")
 
     @contextmanager
     def _locked(self):
