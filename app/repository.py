@@ -163,18 +163,6 @@ class JobRepository:
                 (total_pages, processed_pages, skipped_pages, job_id),
             )
 
-    def update_job_error(self, job_id: str, error: Optional[str]) -> None:
-        with self._locked():
-            self._conn.execute(
-                """
-                UPDATE jobs
-                   SET last_error = ?,
-                       updated_at = datetime('now')
-                 WHERE job_id = ?
-                """,
-                (error, job_id),
-            )
-
     def record_page_result(
         self,
         job_id: str,
