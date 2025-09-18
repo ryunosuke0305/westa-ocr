@@ -27,7 +27,6 @@ class Masters(BaseModel):
 
 class WebhookConfig(BaseModel):
     url: HttpUrl
-    secret: str
 
 
 class GeminiConfig(BaseModel):

@@ -46,7 +46,6 @@ class JobRepository:
                     pattern TEXT,
                     masters_json TEXT NOT NULL,
                     webhook_url TEXT NOT NULL,
-                    webhook_secret TEXT NOT NULL,
                     gemini_json TEXT,
                     options_json TEXT,
                     idempotency_key TEXT NOT NULL,
@@ -110,7 +109,6 @@ class JobRepository:
             "pattern": pattern,
             "masters_json": json.dumps(masters),
             "webhook_url": webhook["url"],
-            "webhook_secret": webhook["secret"],
             "gemini_json": json.dumps(gemini) if gemini else None,
             "options_json": json.dumps(options) if options else None,
             "idempotency_key": idempotency_key,
@@ -122,10 +120,10 @@ class JobRepository:
                 """
                 INSERT INTO jobs (
                     job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, webhook_secret, gemini_json, options_json,
+                    webhook_url, gemini_json, options_json,
                     idempotency_key, status
                 ) VALUES (:job_id, :order_id, :file_id, :prompt, :pattern, :masters_json,
-                          :webhook_url, :webhook_secret, :gemini_json, :options_json,
+                          :webhook_url, :gemini_json, :options_json,
                           :idempotency_key, :status)
                 """,
                 payload,
