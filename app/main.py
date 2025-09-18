@@ -116,7 +116,10 @@ def register_routes(app: FastAPI) -> None:
 
         idempotency_key = payload.idempotency_key or payload.order_id
         request_snapshot = json.dumps(
-            payload.model_dump(by_alias=True), ensure_ascii=False, indent=2, sort_keys=True
+            payload.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
         )
         existing = repository.find_job_by_idempotency(idempotency_key)
         if existing:
@@ -152,10 +155,18 @@ def register_routes(app: FastAPI) -> None:
                 file_id=payload.file_id,
                 prompt=payload.prompt,
                 pattern=payload.pattern,
-                masters=payload.masters.model_dump(by_alias=True),
-                webhook=payload.webhook.model_dump(),
-                gemini=payload.gemini.model_dump(by_alias=True, exclude_none=True) if payload.gemini else None,
-                options=payload.options.model_dump(by_alias=True, exclude_none=True) if payload.options else None,
+                masters=payload.masters.model_dump(mode="json", by_alias=True),
+                webhook=payload.webhook.model_dump(mode="json"),
+                gemini=(
+                    payload.gemini.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if payload.gemini
+                    else None
+                ),
+                options=(
+                    payload.options.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if payload.options
+                    else None
+                ),
                 idempotency_key=idempotency_key,
             )
         except sqlite3.IntegrityError as exc:
