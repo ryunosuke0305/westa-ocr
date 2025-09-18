@@ -13,10 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY README.md ./README.md
 
-EXPOSE 5000
+EXPOSE 8080
 
 ENV SQLITE_PATH=/data/relay.db \
     TMP_DIR=/data/tmp \
-    PORT=5000
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
