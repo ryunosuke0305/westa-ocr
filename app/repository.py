@@ -83,6 +83,14 @@ class JobRepository:
         columns = {row["name"] for row in cursor.fetchall()}
         if "webhook_token" in columns:
             return
+        if "webhook_secret" in columns:
+            LOGGER.info(
+                "Applying jobs table migration: renaming webhook_secret column to webhook_token"
+            )
+            self._conn.execute(
+                "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
+            )
+            return
         LOGGER.info("Applying jobs table migration: adding webhook_token column")
         self._conn.execute(
             "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
