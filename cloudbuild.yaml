@@ -26,6 +26,11 @@ steps:
         echo "Full image path from images section: $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA"
     id: DebugSubstitutions
 
+  - name: 'busybox'
+    args: ['sleep', '10'] # ここを 10秒 に変更
+    id: WaitForArtifactRegistrySync
+    waitFor: ['DebugSubstitutions']
+
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: gcloud
     args:
@@ -51,6 +56,8 @@ steps:
       - '--set-env-vars=BACKOFF_MAX_RETRIES=5'
       - '--set-env-vars=BACKOFF_INITIAL_MS=1000'
       - '--set-env-vars=DRIVE_SERVICE_ACCOUNT_JSON=/data/sa.json'
+    id: Deploy
+    waitFor: ['Build', 'DebugSubstitutions', 'WaitForArtifactRegistrySync'] # ここに WaitForArtifactRegistrySync を追加
 
 images:
   - >-
