@@ -30,7 +30,7 @@ steps:
       - '--set-env-vars=GEMINI_API_KEY=AIzaSyCa7A6IyiZkfJM7vnYipsYooUQmsrxo6p0'
       - '--set-env-vars=SQLITE_PATH=/data/relay.db'
       - '--set-env-vars=TMP_DIR=/data/tmp'
-      - '--set-env-vars=MAX_CONCURRENCY=10'
+      - '--set-env-vars=WORKER_CONCURRENCY=10'
       - '--set-env-vars=RATE_LIMIT_RPS=15'
       - '--set-env-vars=BACKOFF_MAX_RETRIES=5'
       - '--set-env-vars=BACKOFF_INITIAL_MS=1000'
