@@ -13,9 +13,7 @@ from typing import Optional
 class Settings:
     """Container for configuration values loaded from environment variables."""
 
-    relay_token: Optional[str]
-    hmac_secret: Optional[str]
-    hmac_ttl_seconds: int
+    relay_token: str
     sqlite_path: Path
     data_dir: Path
     tmp_dir: Path
@@ -27,13 +25,6 @@ class Settings:
     webhook_timeout: float
     request_timeout: float
     log_level: str
-
-    @property
-    def requires_authentication(self) -> bool:
-        """Return ``True`` when at least one authentication mechanism is configured."""
-
-        return bool(self.relay_token or self.hmac_secret)
-
 
 def _read_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -63,10 +54,12 @@ def get_settings() -> Settings:
     sqlite_path = Path(os.getenv("SQLITE_PATH", str(data_dir / "relay.db"))).resolve()
     tmp_dir = Path(os.getenv("TMP_DIR", str(data_dir / "tmp"))).resolve()
 
+    relay_token = os.getenv("RELAY_TOKEN")
+    if not relay_token:
+        raise RuntimeError("RELAY_TOKEN environment variable must be set")
+
     return Settings(
-        relay_token=os.getenv("RELAY_TOKEN"),
-        hmac_secret=os.getenv("RELAY_HMAC_SECRET"),
-        hmac_ttl_seconds=_read_int("RELAY_HMAC_TTL", 300),
+        relay_token=relay_token,
         sqlite_path=sqlite_path,
         data_dir=data_dir,
         tmp_dir=tmp_dir,

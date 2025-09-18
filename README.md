@@ -37,7 +37,7 @@ GAS(doPost) で検証・保存・集計
 ### 3.1 エンドポイント: `POST /jobs`
 
 - **目的**: ジョブ登録（即時 200 ACK）。
-- **認証**: `Authorization: Bearer <RELAY_TOKEN>` または `X-Signature: <HMAC>` + `X-Timestamp`（秒）。
+- **認証**: `Authorization: Bearer <RELAY_TOKEN>` のみ。
 - **Content-Type**: `application/json`
 
 #### リクエストボディ（厳密仕様）
@@ -52,8 +52,7 @@ GAS(doPost) で検証・保存・集計
     "itemCsv": "string (必須, CSV)"        // 品目マスタ（ヘッダ含むCSV）
   },
   "webhook": {
-    "url": "https://script.google.com/... (必須)",
-    "secret": "string (必須)"              // Webhook署名の共有鍵（HMAC）
+    "url": "https://script.google.com/... (必須)"
   },
   "gemini": {
     "model": "string (既定: gemini-2.5-flash)",
@@ -86,9 +85,7 @@ GAS(doPost) で検証・保存・集計
 
 ## 4. 渡す情報（Relay → GAS Webhook）
 
-### 4.1 共通ヘッダ（署名）
-- `X-Signature`: `hex(HMAC-SHA256(secret, rawBody))`
-- `X-Timestamp`: unix seconds（5分以内を許容）
+### 4.1 共通ヘッダ
 - `Content-Type`: `application/json`
 
 ### 4.2 ページごとの結果: `event=PAGE_RESULT`
@@ -182,16 +179,9 @@ GAS(doPost) で検証・保存・集計
 
 ## 7. セキュリティ
 
-- **入力認証（GAS→Relay）**: Bearer Token もしくは HMAC 署名（`X-Signature`, `X-Timestamp`）。
-- **出力署名（Relay→GAS）**: Webhook 全通知に HMAC 署名を付与。GAS 側で検証。  
-- **時刻検証**: `|now - X-Timestamp| <= 300s` 以内のみ受理。  
-- **冪等性**: `idempotencyKey`（`orderId:pageIndex`）で重複処理を抑止。  
+- **入力認証（GAS→Relay）**: Bearer Token のみ。
+- **冪等性**: `idempotencyKey`（`orderId:pageIndex`）で重複処理を抑止。
 - **秘密情報**: `GEMINI_API_KEY` は**コンテナ環境変数**で注入し、ログに出さない。
-
-**HMAC 例（擬似）**:
-```
-signature = hex( HMAC_SHA256(secret, rawRequestBody) )
-```
 
 ---
 
@@ -271,7 +261,7 @@ workerLoop():
           try:
             resp = callGemini(page, prompt, masters)
             upsert pages(status=DONE, raw_text=resp, is_non_order=detectNonOrder(resp))
-            postWebhook(PAGE_RESULT, i, resp)  // with HMAC
+            postWebhook(PAGE_RESULT, i, resp)
           except e:
             upsert pages(status=ERROR, error=short(e))
             retry with backoff (<= BACKOFF_MAX_RETRIES)
@@ -324,7 +314,6 @@ docker run -d --name relay \
 - [ ] ページ分割が正しい（ページ数一致）
 - [ ] `PAGE_RESULT` が GAS に届き、`parseMultiPageDataFromLLM` で解析可能
 - [ ] `JOB_SUMMARY` で「注文一覧」のページ数・ステータスが更新される
-- [ ] HMAC 検証 OK（改ざん・リプレイを拒否）
 - [ ] 429/5xx リトライが機能
 - [ ] `/data` に DB/一時ファイルが生成・削除される
 
@@ -340,7 +329,7 @@ const body = {
   prompt: replacedPrompt,   // {current_date} 埋め込み後
   pattern: PATTERN,
   masters: { shipCsv, itemCsv },
-  webhook: { url: GAS_WEBAPP_URL, secret: WEBHOOK_SECRET },
+  webhook: { url: GAS_WEBAPP_URL },
   gemini: { model: "gemini-2.5-flash", temperature: 0.1, topP: 0.9, maxOutputTokens: 65536 },
   options: { splitMode: "pdf", concurrency: 3 }
 };

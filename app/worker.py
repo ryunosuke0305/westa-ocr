@@ -192,7 +192,7 @@ class JobWorker(threading.Thread):
             "idempotencyKey": f"{job_row['order_id']}:{page_index}",
         }
         try:
-            self._webhook.send(job_row["webhook_url"], job_row["webhook_secret"], payload)
+            self._webhook.send(job_row["webhook_url"], payload)
         except Exception as exc:
             LOGGER.exception(
                 "Failed to dispatch page webhook",
@@ -233,7 +233,7 @@ class JobWorker(threading.Thread):
         if status is not None:
             payload["status"] = status.value
         try:
-            self._webhook.send(job_row["webhook_url"], job_row["webhook_secret"], payload)
+            self._webhook.send(job_row["webhook_url"], payload)
         except Exception as exc:
             LOGGER.exception("Failed to dispatch summary webhook", extra={"jobId": job_row["job_id"]})
 
