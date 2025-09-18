@@ -83,9 +83,23 @@ class JobRepository:
     def _ensure_webhook_token_column(self) -> None:
         cursor = self._conn.execute("PRAGMA table_info(jobs)")
         columns = {row["name"] for row in cursor.fetchall()}
-        if "webhook_token" in columns:
+        has_token = "webhook_token" in columns
+        has_secret = "webhook_secret" in columns
+
+        if has_token and not has_secret:
             return
-        if "webhook_secret" in columns:
+
+        if has_token and has_secret:
+            LOGGER.info(
+                "Applying jobs table migration: dropping legacy webhook_secret column"
+            )
+            self._rebuild_jobs_table(
+                "CASE WHEN (webhook_token IS NOT NULL AND webhook_token <> '') "
+                "THEN webhook_token ELSE webhook_secret END"
+            )
+            return
+
+        if has_secret:
             LOGGER.info(
                 "Applying jobs table migration: renaming webhook_secret column to webhook_token"
             )
@@ -94,23 +108,21 @@ class JobRepository:
                     "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
                 )
             except sqlite3.OperationalError:
-                self._migrate_webhook_secret_column()
+                self._rebuild_jobs_table("webhook_secret")
             return
+
         LOGGER.info("Applying jobs table migration: adding webhook_token column")
         self._conn.execute(
             "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
         )
 
-    def _migrate_webhook_secret_column(self) -> None:
-        LOGGER.info(
-            "Falling back to table recreation for webhook_secret -> webhook_token migration"
-        )
+    def _rebuild_jobs_table(self, webhook_token_expr: str) -> None:
+        LOGGER.info("Falling back to table recreation for webhook column migration")
         self._conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self._conn.execute("ALTER TABLE jobs RENAME TO jobs_old")
             self._create_tables()
-            self._conn.execute(
-                """
+            query = f"""
                 INSERT INTO jobs (
                     job_id, order_id, file_id, prompt, pattern, masters_json,
                     webhook_url, webhook_token, gemini_json, options_json,
@@ -119,12 +131,12 @@ class JobRepository:
                 )
                 SELECT
                     job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, webhook_secret, gemini_json, options_json,
+                    webhook_url, {webhook_token_expr} AS webhook_token, gemini_json, options_json,
                     idempotency_key, status, last_error, total_pages,
                     processed_pages, skipped_pages, created_at, updated_at
                 FROM jobs_old
-                """
-            )
+            """
+            self._conn.execute(query)
             self._conn.execute("DROP TABLE jobs_old")
         finally:
             self._conn.execute("PRAGMA foreign_keys=ON")
