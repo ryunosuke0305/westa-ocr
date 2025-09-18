@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,35 @@ class WebhookLogEntry:
 
 
 @dataclass(slots=True)
+class RelayRequestLogEntry:
+    """Incoming request from ProcessOrder_test_relay."""
+
+    timestamp: datetime
+    job_id: str
+    order_id: str
+    idempotency_key: str
+    status: str
+    payload: str
+    message: Optional[str]
+
+
+@dataclass(slots=True)
+class RelayWebhookLogEntry:
+    """Webhook payload dispatched during automatic processing."""
+
+    timestamp: datetime
+    job_id: str
+    order_id: str
+    event: str
+    url: str
+    payload: str
+    success: bool
+    status_code: Optional[int]
+    response_text: Optional[str]
+    error: Optional[str]
+
+
+@dataclass(slots=True)
 class AdminMessage:
     """Feedback banner to display on the dashboard."""
 
@@ -68,33 +98,104 @@ class AdminState:
     """Container keeping the latest admin operations."""
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._gemini_logs: List[GeminiLogEntry] = []
         self._webhook_logs: List[WebhookLogEntry] = []
+        self._relay_request_logs: List[RelayRequestLogEntry] = []
+        self._relay_webhook_logs: List[RelayWebhookLogEntry] = []
         self._messages: List[AdminMessage] = []
 
     @property
     def gemini_logs(self) -> List[GeminiLogEntry]:
-        return list(self._gemini_logs)
+        with self._lock:
+            return list(self._gemini_logs)
 
     @property
     def webhook_logs(self) -> List[WebhookLogEntry]:
-        return list(self._webhook_logs)
+        with self._lock:
+            return list(self._webhook_logs)
+
+    @property
+    def relay_request_logs(self) -> List[RelayRequestLogEntry]:
+        with self._lock:
+            return list(self._relay_request_logs)
+
+    @property
+    def relay_webhook_logs(self) -> List[RelayWebhookLogEntry]:
+        with self._lock:
+            return list(self._relay_webhook_logs)
 
     @property
     def messages(self) -> List[AdminMessage]:
-        return list(self._messages)
+        with self._lock:
+            return list(self._messages)
 
     def add_gemini_log(self, entry: GeminiLogEntry) -> None:
-        self._gemini_logs.insert(0, entry)
-        del self._gemini_logs[10:]
+        with self._lock:
+            self._gemini_logs.insert(0, entry)
+            del self._gemini_logs[10:]
 
     def add_webhook_log(self, entry: WebhookLogEntry) -> None:
-        self._webhook_logs.insert(0, entry)
-        del self._webhook_logs[10:]
+        with self._lock:
+            self._webhook_logs.insert(0, entry)
+            del self._webhook_logs[10:]
+
+    def add_relay_request_log(
+        self,
+        *,
+        job_id: str,
+        order_id: str,
+        idempotency_key: str,
+        status: str,
+        payload: str,
+        message: Optional[str],
+    ) -> None:
+        entry = RelayRequestLogEntry(
+            timestamp=datetime.utcnow(),
+            job_id=job_id,
+            order_id=order_id,
+            idempotency_key=idempotency_key,
+            status=status,
+            payload=payload,
+            message=message,
+        )
+        with self._lock:
+            self._relay_request_logs.insert(0, entry)
+            del self._relay_request_logs[50:]
+
+    def add_relay_webhook_log(
+        self,
+        *,
+        job_id: str,
+        order_id: str,
+        event: str,
+        url: str,
+        payload: str,
+        success: bool,
+        status_code: Optional[int],
+        response_text: Optional[str],
+        error: Optional[str],
+    ) -> None:
+        entry = RelayWebhookLogEntry(
+            timestamp=datetime.utcnow(),
+            job_id=job_id,
+            order_id=order_id,
+            event=event,
+            url=url,
+            payload=payload,
+            success=success,
+            status_code=status_code,
+            response_text=response_text,
+            error=error,
+        )
+        with self._lock:
+            self._relay_webhook_logs.insert(0, entry)
+            del self._relay_webhook_logs[50:]
 
     def add_message(self, entry: AdminMessage) -> None:
-        self._messages.insert(0, entry)
-        del self._messages[10:]
+        with self._lock:
+            self._messages.insert(0, entry)
+            del self._messages[10:]
 
 
 CONFIG_FIELDS: List[Dict[str, str]] = [
@@ -102,12 +203,12 @@ CONFIG_FIELDS: List[Dict[str, str]] = [
     {"env": "DATA_DIR", "label": "Data Directory", "placeholder": "/data"},
     {"env": "SQLITE_PATH", "label": "SQLite Path", "placeholder": "<DATA_DIR>/relay.db"},
     {"env": "TMP_DIR", "label": "Temporary Directory", "placeholder": "<DATA_DIR>/tmp"},
-    {"env": "WORKER_IDLE_SLEEP", "label": "Worker Idle Sleep", "placeholder": "1.0"},
-    {"env": "GEMINI_API_KEY", "label": "Gemini API Key", "placeholder": ""},
-    {"env": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "gemini-2.5-flash"},
-    {"env": "WEBHOOK_TIMEOUT", "label": "Webhook Timeout", "placeholder": "30"},
-    {"env": "REQUEST_TIMEOUT", "label": "Request Timeout", "placeholder": "60"},
-    {"env": "LOG_LEVEL", "label": "Log Level", "placeholder": "INFO"},
+    {"env": "WORKER_IDLE_SLEEP", "label": "Worker Idle Sleep", "placeholder": "秒数 (例: 1.0)"},
+    {"env": "GEMINI_API_KEY", "label": "Gemini API Key", "placeholder": "Google AI Studio の API キー"},
+    {"env": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "例: gemini-2.5-flash"},
+    {"env": "WEBHOOK_TIMEOUT", "label": "Webhook Timeout", "placeholder": "秒数 (例: 30)"},
+    {"env": "REQUEST_TIMEOUT", "label": "Request Timeout", "placeholder": "秒数 (例: 60)"},
+    {"env": "LOG_LEVEL", "label": "Log Level", "placeholder": "例: INFO / DEBUG"},
 ]
 
 
@@ -169,11 +270,42 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
         for entry in state.webhook_logs
     ]
 
+    relay_request_logs = [
+        {
+            "timestamp": _format_datetime(entry.timestamp),
+            "jobId": entry.job_id,
+            "orderId": entry.order_id,
+            "idempotencyKey": entry.idempotency_key,
+            "status": entry.status,
+            "message": entry.message,
+            "payload": entry.payload,
+        }
+        for entry in state.relay_request_logs
+    ]
+
+    relay_webhook_logs = [
+        {
+            "timestamp": _format_datetime(entry.timestamp),
+            "jobId": entry.job_id,
+            "orderId": entry.order_id,
+            "event": entry.event,
+            "url": entry.url,
+            "payload": entry.payload,
+            "success": entry.success,
+            "statusCode": entry.status_code,
+            "responseText": entry.response_text,
+            "error": entry.error,
+        }
+        for entry in state.relay_webhook_logs
+    ]
+
     return {
         "configFields": config_fields,
         "messages": messages,
         "geminiLogs": gemini_logs,
         "webhookLogs": webhook_logs,
+        "relayRequestLogs": relay_request_logs,
+        "relayWebhookLogs": relay_webhook_logs,
         "defaults": {
             "mimeType": "text/plain",
             "masters": "{}",
@@ -225,6 +357,7 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
         gemini_client=new_gemini,
         webhook_dispatcher=new_webhook,
         idle_sleep=settings.worker_idle_sleep,
+        admin_state=app.state.admin_state,
     )
     new_worker.start()
 
