@@ -16,7 +16,9 @@ class WebhookDispatcher:
     """Send webhook payloads."""
 
     def __init__(self, timeout: float) -> None:
-        self._client = httpx.Client(timeout=timeout)
+        # Google Apps Script の Webhook など、302 リダイレクトで実体レスポンスを返す
+        # エンドポイントにも対応できるよう、リダイレクトの追跡を有効化する。
+        self._client = httpx.Client(timeout=timeout, follow_redirects=True)
 
     def close(self) -> None:
         self._client.close()
