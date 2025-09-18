@@ -16,6 +16,6 @@ COPY README.md ./README.md
 EXPOSE 8080
 
 ENV SQLITE_PATH=/data/relay.db \
-    TMP_DIR=/data/tmp \
+    TMP_DIR=/data/tmp
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
