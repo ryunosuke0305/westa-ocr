@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import queue
-import sqlite3
 import secrets
+import sqlite3
 import string
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Dict
 
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .admin import AdminState, register_admin_routes
 from .auth import verify_request
@@ -25,6 +28,8 @@ from .webhook import WebhookDispatcher
 from .worker import JobWorker
 
 LOGGER = get_logger(__name__)
+
+INITIALIZATION_EXEMPT_PATHS = frozenset({"/", "/healthz"})
 
 
 def _generate_job_id() -> str:
@@ -42,32 +47,6 @@ def _error_response(code: str, message: str, status_code: int) -> Response:
 
 
 def create_application() -> FastAPI:
-    settings = get_settings()
-    configure_logging(settings.log_level)
-
-    repository = JobRepository(settings.sqlite_path)
-    job_queue: queue.Queue[str] = queue.Queue()
-    file_fetcher = FileFetcher(
-        settings.request_timeout,
-        drive_service_account_json=settings.drive_service_account_json,
-    )
-    gemini_client = GeminiClient(
-        settings.gemini_api_key,
-        default_model=settings.gemini_model,
-        timeout=settings.request_timeout,
-    )
-    webhook_dispatcher = WebhookDispatcher(settings.webhook_timeout)
-    admin_state = AdminState()
-    worker = JobWorker(
-        repository=repository,
-        job_queue=job_queue,
-        file_fetcher=file_fetcher,
-        gemini_client=gemini_client,
-        webhook_dispatcher=webhook_dispatcher,
-        idle_sleep=settings.worker_idle_sleep,
-        admin_state=admin_state,
-    )
-
     app = FastAPI(title="westa-ocr relay", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -77,14 +56,26 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.state.settings = settings
-    app.state.repository = repository
-    app.state.job_queue = job_queue
-    app.state.file_fetcher = file_fetcher
-    app.state.gemini_client = gemini_client
-    app.state.webhook_dispatcher = webhook_dispatcher
-    app.state.worker = worker
-    app.state.admin_state = admin_state
+    app.state.admin_state = AdminState()
+    app.state.initialization_complete = None
+    app.state.initialization_error = None
+
+    @app.middleware("http")
+    async def wait_for_initialization(request: Request, call_next):  # pragma: no cover - middleware
+        if request.url.path not in INITIALIZATION_EXEMPT_PATHS:
+            event = request.app.state.initialization_complete
+            if event is None:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "initializing"},
+                )
+            await event.wait()
+            if request.app.state.initialization_error is not None:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "initialization_failed"},
+                )
+        return await call_next(request)
 
     register_routes(app)
     register_admin_routes(app)
@@ -94,6 +85,10 @@ def create_application() -> FastAPI:
 
 
 def register_routes(app: FastAPI) -> None:
+    @app.get("/", tags=["health"])
+    async def health() -> Dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/healthz", tags=["health"])
     async def healthcheck() -> Dict[str, str]:
         return {"status": "ok"}
@@ -216,18 +211,40 @@ def register_routes(app: FastAPI) -> None:
 def register_events(app: FastAPI) -> None:
     @app.on_event("startup")
     async def on_startup() -> None:  # pragma: no cover - lifecycle hook
-        repository: JobRepository = app.state.repository
-        job_queue: queue.Queue[str] = app.state.job_queue
-        worker: JobWorker = app.state.worker
-        pending = repository.list_pending_jobs()
-        for job_id in pending:
-            repository.mark_enqueued(job_id)
-            job_queue.put(job_id)
-        worker.start()
-        LOGGER.info("Startup complete", extra={"pendingJobs": len(pending)})
+        event = asyncio.Event()
+        app.state.initialization_complete = event
+
+        async def initialize() -> None:
+            try:
+                components, pending = await asyncio.to_thread(
+                    _build_components, app.state.admin_state
+                )
+            except Exception as exc:  # pragma: no cover - defensive guard
+                LOGGER.exception("Failed to initialize application", exc_info=exc)
+                app.state.initialization_error = exc
+            else:
+                app.state.settings = components["settings"]
+                app.state.repository = components["repository"]
+                app.state.job_queue = components["job_queue"]
+                app.state.file_fetcher = components["file_fetcher"]
+                app.state.gemini_client = components["gemini_client"]
+                app.state.webhook_dispatcher = components["webhook_dispatcher"]
+                app.state.worker = components["worker"]
+                app.state.worker.start()
+                LOGGER.info("Startup complete", extra={"pendingJobs": pending})
+            finally:
+                event.set()
+
+        asyncio.create_task(initialize())
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:  # pragma: no cover - lifecycle hook
+        event = getattr(app.state, "initialization_complete", None)
+        if event is not None:
+            await event.wait()
+        if getattr(app.state, "initialization_error", None) is not None:
+            return
+
         worker: JobWorker = app.state.worker
         worker.stop()
         worker.join(timeout=10)
@@ -236,6 +253,62 @@ def register_events(app: FastAPI) -> None:
         app.state.file_fetcher.close()
         app.state.gemini_client.close()
         app.state.repository.close()
+
+
+def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    job_queue: "queue.Queue[str]" = queue.Queue()
+    with ExitStack() as stack:
+        repository = JobRepository(settings.sqlite_path)
+        stack.callback(repository.close)
+
+        file_fetcher = FileFetcher(
+            settings.request_timeout,
+            drive_service_account_json=settings.drive_service_account_json,
+        )
+        stack.callback(file_fetcher.close)
+
+        gemini_client = GeminiClient(
+            settings.gemini_api_key,
+            default_model=settings.gemini_model,
+            timeout=settings.request_timeout,
+        )
+        stack.callback(gemini_client.close)
+
+        webhook_dispatcher = WebhookDispatcher(settings.webhook_timeout)
+        stack.callback(webhook_dispatcher.close)
+
+        worker = JobWorker(
+            repository=repository,
+            job_queue=job_queue,
+            file_fetcher=file_fetcher,
+            gemini_client=gemini_client,
+            webhook_dispatcher=webhook_dispatcher,
+            idle_sleep=settings.worker_idle_sleep,
+            admin_state=admin_state,
+        )
+
+        pending_jobs = repository.list_pending_jobs()
+        for job_id in pending_jobs:
+            repository.mark_enqueued(job_id)
+            job_queue.put(job_id)
+
+        stack.pop_all()
+
+    return (
+        {
+            "settings": settings,
+            "repository": repository,
+            "job_queue": job_queue,
+            "file_fetcher": file_fetcher,
+            "gemini_client": gemini_client,
+            "webhook_dispatcher": webhook_dispatcher,
+            "worker": worker,
+        },
+        len(pending_jobs),
+    )
 
 
 app = create_application()
