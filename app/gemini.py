@@ -68,18 +68,27 @@ class GeminiClient:
             )
             return GeminiResult(text=text, meta={"model": target_model, "durationMs": 0, "tokensInput": None, "tokensOutput": None})
 
+        ship_csv = masters.get("shipCsv") if isinstance(masters, dict) else None
+        item_csv = masters.get("itemCsv") if isinstance(masters, dict) else None
+
+        text_segments = [prompt]
+        if ship_csv:
+            text_segments.append(ship_csv)
+        if item_csv:
+            text_segments.append(item_csv)
+
         payload = {
             "contents": [
                 {
                     "role": "user",
                     "parts": [
-                        {"text": prompt},
                         {
                             "inline_data": {
                                 "mime_type": mime_type,
                                 "data": base64.b64encode(page_bytes).decode("utf-8"),
                             }
                         },
+                        {"text": "\n\n".join(text_segments)},
                     ],
                 }
             ],
