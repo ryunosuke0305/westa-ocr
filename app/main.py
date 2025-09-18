@@ -13,6 +13,7 @@ from typing import Dict
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from .admin import AdminState, register_admin_routes
 from .auth import verify_request
 from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
@@ -78,8 +79,10 @@ def create_application() -> FastAPI:
     app.state.gemini_client = gemini_client
     app.state.webhook_dispatcher = webhook_dispatcher
     app.state.worker = worker
+    app.state.admin_state = AdminState()
 
     register_routes(app)
+    register_admin_routes(app)
     register_events(app)
 
     return app
