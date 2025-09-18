@@ -37,15 +37,8 @@ steps:
       - '--quiet'
 
       # ====== 環境変数の設定 ======
-      - '--set-env-vars=RELAY_TOKEN=je958tgi5tjeoy59'
-      - '--set-env-vars=GEMINI_API_KEY=AIzaSyCa7A6IyiZkfJM7vnYipsYooUQmsrxo6p0'
-      - '--set-env-vars=SQLITE_PATH=/data/relay.db'
-      - '--set-env-vars=TMP_DIR=/data/tmp'
-      - '--set-env-vars=WORKER_CONCURRENCY=10'
-      - '--set-env-vars=RATE_LIMIT_RPS=15'
-      - '--set-env-vars=BACKOFF_MAX_RETRIES=5'
-      - '--set-env-vars=BACKOFF_INITIAL_MS=1000'
-      - '--set-env-vars=DRIVE_SERVICE_ACCOUNT_JSON=/data/sa.json'
+      - >-
+        --set-env-vars=RELAY_TOKEN=je958tgi5tjeoy59,GEMINI_API_KEY=AIzaSyCa7A6IyiZkfJM7vnYipsYooUQmsrxo6p0,SQLITE_PATH=/data/relay.db,TMP_DIR=/data/tmp,WORKER_CONCURRENCY=10,RATE_LIMIT_RPS=15,BACKOFF_MAX_RETRIES=5,BACKOFF_INITIAL_MS=1000,DRIVE_SERVICE_ACCOUNT_JSON=/data/sa.json
     id: Deploy
     waitFor: ['Push'] # Deploy ステップは Push ステップが完了した後に実行
 
