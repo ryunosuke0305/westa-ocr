@@ -47,7 +47,10 @@ def create_application() -> FastAPI:
 
     repository = JobRepository(settings.sqlite_path)
     job_queue: queue.Queue[str] = queue.Queue()
-    file_fetcher = FileFetcher(settings.request_timeout)
+    file_fetcher = FileFetcher(
+        settings.request_timeout,
+        drive_service_account_json=settings.drive_service_account_json,
+    )
     gemini_client = GeminiClient(
         settings.gemini_api_key,
         default_model=settings.gemini_model,
