@@ -28,6 +28,9 @@ class JobRepository:
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            LOGGER.info("Creating new SQLite database", extra={"path": str(path)})
+            path.touch()
         conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -50,7 +53,7 @@ class JobRepository:
                 pattern TEXT,
                 masters_json TEXT NOT NULL,
                 webhook_url TEXT NOT NULL,
-                webhook_token TEXT NOT NULL,
+                webhook_token TEXT,
                 gemini_json TEXT,
                 options_json TEXT,
                 idempotency_key TEXT NOT NULL,
@@ -81,11 +84,27 @@ class JobRepository:
         )
 
     def _ensure_webhook_token_column(self) -> None:
-        cursor = self._conn.execute("PRAGMA table_info(jobs)")
-        columns = {row["name"] for row in cursor.fetchall()}
-        if "webhook_token" in columns:
-            return
-        if "webhook_secret" in columns:
+        def _refresh_columns() -> Dict[str, sqlite3.Row]:
+            cursor = self._conn.execute("PRAGMA table_info(jobs)")
+            return {row["name"]: row for row in cursor.fetchall()}
+
+        columns = _refresh_columns()
+        has_token = "webhook_token" in columns
+        has_secret = "webhook_secret" in columns
+
+        if has_token and has_secret:
+            LOGGER.info(
+                "Applying jobs table migration: dropping legacy webhook_secret column"
+            )
+            self._rebuild_jobs_table(
+                "CASE WHEN (webhook_token IS NOT NULL AND webhook_token <> '') "
+                "THEN webhook_token ELSE webhook_secret END"
+            )
+            columns = _refresh_columns()
+            has_token = "webhook_token" in columns
+            has_secret = "webhook_secret" in columns
+
+        if has_secret:
             LOGGER.info(
                 "Applying jobs table migration: renaming webhook_secret column to webhook_token"
             )
@@ -94,23 +113,29 @@ class JobRepository:
                     "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
                 )
             except sqlite3.OperationalError:
-                self._migrate_webhook_secret_column()
-            return
-        LOGGER.info("Applying jobs table migration: adding webhook_token column")
-        self._conn.execute(
-            "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
-        )
+                self._rebuild_jobs_table("webhook_secret")
+            columns = _refresh_columns()
+            has_token = "webhook_token" in columns
 
-    def _migrate_webhook_secret_column(self) -> None:
-        LOGGER.info(
-            "Falling back to table recreation for webhook_secret -> webhook_token migration"
-        )
+        if has_token:
+            token_info = columns["webhook_token"]
+            if token_info["notnull"]:
+                LOGGER.info(
+                    "Applying jobs table migration: dropping NOT NULL constraint from webhook_token column"
+                )
+                self._rebuild_jobs_table("webhook_token")
+            return
+
+        LOGGER.info("Applying jobs table migration: adding webhook_token column")
+        self._conn.execute("ALTER TABLE jobs ADD COLUMN webhook_token TEXT")
+
+    def _rebuild_jobs_table(self, webhook_token_expr: str) -> None:
+        LOGGER.info("Falling back to table recreation for webhook column migration")
         self._conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self._conn.execute("ALTER TABLE jobs RENAME TO jobs_old")
             self._create_tables()
-            self._conn.execute(
-                """
+            query = f"""
                 INSERT INTO jobs (
                     job_id, order_id, file_id, prompt, pattern, masters_json,
                     webhook_url, webhook_token, gemini_json, options_json,
@@ -119,12 +144,12 @@ class JobRepository:
                 )
                 SELECT
                     job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, webhook_secret, gemini_json, options_json,
+                    webhook_url, {webhook_token_expr} AS webhook_token, gemini_json, options_json,
                     idempotency_key, status, last_error, total_pages,
                     processed_pages, skipped_pages, created_at, updated_at
                 FROM jobs_old
-                """
-            )
+            """
+            self._conn.execute(query)
             self._conn.execute("DROP TABLE jobs_old")
         finally:
             self._conn.execute("PRAGMA foreign_keys=ON")
