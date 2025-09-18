@@ -199,7 +199,7 @@ signature = hex( HMAC_SHA256(secret, rawRequestBody) )
 
 | env                          | default             | 説明 |
 |-----------------------------|---------------------|------|
-| PORT                        | 8080                | HTTP待受 |
+| PORT                        | 5000                | HTTP待受 |
 | RELAY_TOKEN                 | (必須)              | GAS→Relay の Bearer |
 | WEBHOOK_USER_AGENT          | relay/1.0           | 監査用 UA |
 | GEMINI_API_KEY              | (必須)              | Gemini 認証 |
@@ -301,7 +301,7 @@ workerLoop():
 
 ```bash
 docker run -d --name relay \
-  -p 8080:8080 \
+  -p 5000:5000 \
   -e RELAY_TOKEN="REPLACE_ME" \
   -e GEMINI_API_KEY="REPLACE_ME" \
   -e GEMINI_MODEL="gemini-2.5-flash" \
