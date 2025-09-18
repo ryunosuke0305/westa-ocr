@@ -51,6 +51,7 @@ substitutions:
   _PLATFORM: managed
   _SERVICE_NAME: westa-ocr
   _TRIGGER_ID: 2e97ec6d-7d44-47f0-ba83-6866b35c8e68
+  REPO_NAME: westa-ocr
 
 tags:
   - gcp-cloud-build-deploy-cloud-run
