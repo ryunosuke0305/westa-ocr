@@ -28,6 +28,9 @@ class JobRepository:
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            LOGGER.info("Creating new SQLite database", extra={"path": str(path)})
+            path.touch()
         conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -50,7 +53,7 @@ class JobRepository:
                 pattern TEXT,
                 masters_json TEXT NOT NULL,
                 webhook_url TEXT NOT NULL,
-                webhook_token TEXT NOT NULL,
+                webhook_token TEXT,
                 gemini_json TEXT,
                 options_json TEXT,
                 idempotency_key TEXT NOT NULL,
@@ -81,13 +84,13 @@ class JobRepository:
         )
 
     def _ensure_webhook_token_column(self) -> None:
-        cursor = self._conn.execute("PRAGMA table_info(jobs)")
-        columns = {row["name"] for row in cursor.fetchall()}
+        def _refresh_columns() -> Dict[str, sqlite3.Row]:
+            cursor = self._conn.execute("PRAGMA table_info(jobs)")
+            return {row["name"]: row for row in cursor.fetchall()}
+
+        columns = _refresh_columns()
         has_token = "webhook_token" in columns
         has_secret = "webhook_secret" in columns
-
-        if has_token and not has_secret:
-            return
 
         if has_token and has_secret:
             LOGGER.info(
@@ -97,7 +100,9 @@ class JobRepository:
                 "CASE WHEN (webhook_token IS NOT NULL AND webhook_token <> '') "
                 "THEN webhook_token ELSE webhook_secret END"
             )
-            return
+            columns = _refresh_columns()
+            has_token = "webhook_token" in columns
+            has_secret = "webhook_secret" in columns
 
         if has_secret:
             LOGGER.info(
@@ -109,12 +114,20 @@ class JobRepository:
                 )
             except sqlite3.OperationalError:
                 self._rebuild_jobs_table("webhook_secret")
+            columns = _refresh_columns()
+            has_token = "webhook_token" in columns
+
+        if has_token:
+            token_info = columns["webhook_token"]
+            if token_info["notnull"]:
+                LOGGER.info(
+                    "Applying jobs table migration: dropping NOT NULL constraint from webhook_token column"
+                )
+                self._rebuild_jobs_table("webhook_token")
             return
 
         LOGGER.info("Applying jobs table migration: adding webhook_token column")
-        self._conn.execute(
-            "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
-        )
+        self._conn.execute("ALTER TABLE jobs ADD COLUMN webhook_token TEXT")
 
     def _rebuild_jobs_table(self, webhook_token_expr: str) -> None:
         LOGGER.info("Falling back to table recreation for webhook column migration")
