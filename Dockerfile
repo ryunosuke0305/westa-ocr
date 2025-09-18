@@ -15,6 +15,7 @@ COPY README.md ./README.md
 EXPOSE 5000
 
 ENV SQLITE_PATH=/data/relay.db \
-    TMP_DIR=/data/tmp
+    TMP_DIR=/data/tmp \
+    PORT=5000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
