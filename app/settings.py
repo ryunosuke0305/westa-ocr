@@ -23,6 +23,7 @@ class Settings:
     webhook_timeout: float
     request_timeout: float
     log_level: str
+    drive_service_account_json: Optional[Path]
 
 def _read_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -46,6 +47,13 @@ def get_settings() -> Settings:
     if not relay_token:
         raise RuntimeError("RELAY_TOKEN environment variable must be set")
 
+    drive_service_account = os.getenv("DRIVE_SERVICE_ACCOUNT_JSON")
+    drive_service_account_path = (
+        Path(drive_service_account).expanduser().resolve()
+        if drive_service_account
+        else None
+    )
+
     return Settings(
         relay_token=relay_token,
         sqlite_path=sqlite_path,
@@ -57,6 +65,7 @@ def get_settings() -> Settings:
         webhook_timeout=_read_float("WEBHOOK_TIMEOUT", 30.0),
         request_timeout=_read_float("REQUEST_TIMEOUT", 60.0),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        drive_service_account_json=drive_service_account_path,
     )
 
 

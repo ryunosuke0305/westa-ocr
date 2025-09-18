@@ -362,7 +362,10 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
     gemini_client.close()
     webhook_dispatcher.close()
 
-    new_file_fetcher = FileFetcher(settings.request_timeout)
+    new_file_fetcher = FileFetcher(
+        settings.request_timeout,
+        drive_service_account_json=settings.drive_service_account_json,
+    )
     new_gemini = GeminiClient(
         settings.gemini_api_key,
         default_model=settings.gemini_model,
