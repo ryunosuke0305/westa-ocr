@@ -36,47 +36,49 @@ class JobRepository:
 
     def _initialise(self) -> None:
         with self._locked():
-            self._conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS jobs (
-                    job_id TEXT PRIMARY KEY,
-                    order_id TEXT NOT NULL,
-                    file_id TEXT NOT NULL,
-                    prompt TEXT NOT NULL,
-                    pattern TEXT,
-                    masters_json TEXT NOT NULL,
-                    webhook_url TEXT NOT NULL,
-                    webhook_token TEXT NOT NULL,
-                    gemini_json TEXT,
-                    options_json TEXT,
-                    idempotency_key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    last_error TEXT,
-                    total_pages INTEGER,
-                    processed_pages INTEGER,
-                    skipped_pages INTEGER,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    UNIQUE(idempotency_key)
-                );
-
-                CREATE TABLE IF NOT EXISTS job_pages (
-                    job_id TEXT NOT NULL,
-                    page_index INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    is_non_order_page INTEGER NOT NULL DEFAULT 0,
-                    raw_text TEXT,
-                    error TEXT,
-                    meta_json TEXT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (job_id, page_index),
-                    FOREIGN KEY(job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
-                );
-                """
-            )
-
+            self._create_tables()
             self._ensure_webhook_token_column()
+
+    def _create_tables(self) -> None:
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                pattern TEXT,
+                masters_json TEXT NOT NULL,
+                webhook_url TEXT NOT NULL,
+                webhook_token TEXT NOT NULL,
+                gemini_json TEXT,
+                options_json TEXT,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_error TEXT,
+                total_pages INTEGER,
+                processed_pages INTEGER,
+                skipped_pages INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(idempotency_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS job_pages (
+                job_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                is_non_order_page INTEGER NOT NULL DEFAULT 0,
+                raw_text TEXT,
+                error TEXT,
+                meta_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (job_id, page_index),
+                FOREIGN KEY(job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            );
+            """
+        )
 
     def _ensure_webhook_token_column(self) -> None:
         cursor = self._conn.execute("PRAGMA table_info(jobs)")
@@ -87,14 +89,45 @@ class JobRepository:
             LOGGER.info(
                 "Applying jobs table migration: renaming webhook_secret column to webhook_token"
             )
-            self._conn.execute(
-                "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
-            )
+            try:
+                self._conn.execute(
+                    "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token"
+                )
+            except sqlite3.OperationalError:
+                self._migrate_webhook_secret_column()
             return
         LOGGER.info("Applying jobs table migration: adding webhook_token column")
         self._conn.execute(
             "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
         )
+
+    def _migrate_webhook_secret_column(self) -> None:
+        LOGGER.info(
+            "Falling back to table recreation for webhook_secret -> webhook_token migration"
+        )
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self._conn.execute("ALTER TABLE jobs RENAME TO jobs_old")
+            self._create_tables()
+            self._conn.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, order_id, file_id, prompt, pattern, masters_json,
+                    webhook_url, webhook_token, gemini_json, options_json,
+                    idempotency_key, status, last_error, total_pages,
+                    processed_pages, skipped_pages, created_at, updated_at
+                )
+                SELECT
+                    job_id, order_id, file_id, prompt, pattern, masters_json,
+                    webhook_url, webhook_secret, gemini_json, options_json,
+                    idempotency_key, status, last_error, total_pages,
+                    processed_pages, skipped_pages, created_at, updated_at
+                FROM jobs_old
+                """
+            )
+            self._conn.execute("DROP TABLE jobs_old")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
     @contextmanager
     def _locked(self):

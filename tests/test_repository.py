@@ -125,3 +125,95 @@ def test_migration_renames_webhook_secret_column(tmp_path: Path) -> None:
     assert row["webhook_token"] == "legacy-secret"
 
     repository.close()
+
+
+def test_migration_recreates_table_when_column_rename_not_supported(tmp_path: Path) -> None:
+    db_path = tmp_path / "relay.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            job_id TEXT PRIMARY KEY,
+            order_id TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            pattern TEXT,
+            masters_json TEXT NOT NULL,
+            webhook_url TEXT NOT NULL,
+            webhook_secret TEXT NOT NULL,
+            gemini_json TEXT,
+            options_json TEXT,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_error TEXT,
+            total_pages INTEGER,
+            processed_pages INTEGER,
+            skipped_pages INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(idempotency_key)
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            job_id, order_id, file_id, prompt, pattern, masters_json,
+            webhook_url, webhook_secret, gemini_json, options_json,
+            idempotency_key, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "job_legacy",
+            "legacy-order",
+            "legacy-file",
+            "legacy-prompt",
+            None,
+            json.dumps({"shipCsv": "a", "itemCsv": "b"}),
+            "https://example.com",
+            "legacy-secret",
+            None,
+            None,
+            "legacy-order",
+            "RECEIVED",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    class RenameFailingConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_inner", inner)
+
+        def execute(self, sql: str, *args, **kwargs):  # type: ignore[override]
+            if "ALTER TABLE jobs RENAME COLUMN webhook_secret TO webhook_token" in sql:
+                raise sqlite3.OperationalError("near \"COLUMN\": syntax error")
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def executescript(self, sql: str):  # type: ignore[override]
+            return self._inner.executescript(sql)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __setattr__(self, name, value):
+            setattr(self._inner, name, value)
+
+    class RenameFailJobRepository(JobRepository):
+        @staticmethod
+        def _connect(path: Path) -> sqlite3.Connection:  # type: ignore[override]
+            base_conn = JobRepository._connect(path)
+            return RenameFailingConnection(base_conn)
+
+    repository = RenameFailJobRepository(db_path)
+    row = repository.get_job("job_legacy")
+    assert row is not None
+    assert row["webhook_token"] == "legacy-secret"
+
+    columns = {
+        column["name"]
+        for column in repository._conn.execute("PRAGMA table_info(jobs)").fetchall()  # type: ignore[attr-defined]
+    }
+    assert "webhook_secret" not in columns
+
+    repository.close()
