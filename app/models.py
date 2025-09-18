@@ -27,6 +27,7 @@ class Masters(BaseModel):
 
 class WebhookConfig(BaseModel):
     url: HttpUrl
+    token: str = Field(..., min_length=1)
 
 
 class GeminiConfig(BaseModel):
@@ -104,6 +105,7 @@ class JobDetail(BaseModel):
     pattern: Optional[str]
     masters: Masters
     webhookUrl: HttpUrl
+    webhookToken: str
     createdAt: datetime
     updatedAt: datetime
     totalPages: Optional[int]

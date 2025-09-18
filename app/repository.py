@@ -46,6 +46,7 @@ class JobRepository:
                     pattern TEXT,
                     masters_json TEXT NOT NULL,
                     webhook_url TEXT NOT NULL,
+                    webhook_token TEXT NOT NULL,
                     gemini_json TEXT,
                     options_json TEXT,
                     idempotency_key TEXT NOT NULL,
@@ -75,6 +76,18 @@ class JobRepository:
                 """
             )
 
+            self._ensure_webhook_token_column()
+
+    def _ensure_webhook_token_column(self) -> None:
+        cursor = self._conn.execute("PRAGMA table_info(jobs)")
+        columns = {row["name"] for row in cursor.fetchall()}
+        if "webhook_token" in columns:
+            return
+        LOGGER.info("Applying jobs table migration: adding webhook_token column")
+        self._conn.execute(
+            "ALTER TABLE jobs ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''"
+        )
+
     @contextmanager
     def _locked(self):
         with self._lock:
@@ -101,6 +114,10 @@ class JobRepository:
         options: Optional[Dict],
         idempotency_key: str,
     ) -> None:
+        webhook_token = (webhook.get("token") or "").strip()
+        if not webhook_token:
+            raise ValueError("webhook token is required")
+
         payload = {
             "job_id": job_id,
             "order_id": order_id,
@@ -109,6 +126,7 @@ class JobRepository:
             "pattern": pattern,
             "masters_json": json.dumps(masters),
             "webhook_url": webhook["url"],
+            "webhook_token": webhook_token,
             "gemini_json": json.dumps(gemini) if gemini else None,
             "options_json": json.dumps(options) if options else None,
             "idempotency_key": idempotency_key,
@@ -120,10 +138,10 @@ class JobRepository:
                 """
                 INSERT INTO jobs (
                     job_id, order_id, file_id, prompt, pattern, masters_json,
-                    webhook_url, gemini_json, options_json,
+                    webhook_url, webhook_token, gemini_json, options_json,
                     idempotency_key, status
                 ) VALUES (:job_id, :order_id, :file_id, :prompt, :pattern, :masters_json,
-                          :webhook_url, :gemini_json, :options_json,
+                          :webhook_url, :webhook_token, :gemini_json, :options_json,
                           :idempotency_key, :status)
                 """,
                 payload,
@@ -299,6 +317,7 @@ class JobRepository:
             "pattern": job["pattern"],
             "masters": masters,
             "webhookUrl": job["webhook_url"],
+            "webhookToken": job["webhook_token"],
             "createdAt": datetime.fromisoformat(job["created_at"]),
             "updatedAt": datetime.fromisoformat(job["updated_at"]),
             "totalPages": job["total_pages"],

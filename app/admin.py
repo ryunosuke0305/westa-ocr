@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -52,6 +52,7 @@ class WebhookLogEntry:
     status_code: Optional[int]
     response_text: Optional[str]
     error: Optional[str]
+    token: Optional[str]
 
 
 @dataclass(slots=True)
@@ -81,6 +82,7 @@ class RelayWebhookLogEntry:
     status_code: Optional[int]
     response_text: Optional[str]
     error: Optional[str]
+    token: Optional[str]
 
 
 @dataclass(slots=True)
@@ -92,6 +94,17 @@ class AdminMessage:
     success: bool
     summary: str
     detail: Optional[str]
+
+
+def _mask_token(token: Optional[str]) -> Optional[str]:
+    if token is None:
+        return None
+    token = token.strip()
+    if not token:
+        return None
+    if len(token) <= 4:
+        return "*" * len(token)
+    return f"{token[:4]}…{token[-2:]}"
 
 
 class AdminState:
@@ -136,6 +149,7 @@ class AdminState:
             del self._gemini_logs[10:]
 
     def add_webhook_log(self, entry: WebhookLogEntry) -> None:
+        entry = replace(entry, token=_mask_token(entry.token))
         with self._lock:
             self._webhook_logs.insert(0, entry)
             del self._webhook_logs[10:]
@@ -175,6 +189,7 @@ class AdminState:
         status_code: Optional[int],
         response_text: Optional[str],
         error: Optional[str],
+        token: Optional[str],
     ) -> None:
         entry = RelayWebhookLogEntry(
             timestamp=datetime.utcnow(),
@@ -187,6 +202,7 @@ class AdminState:
             status_code=status_code,
             response_text=response_text,
             error=error,
+            token=_mask_token(token),
         )
         with self._lock:
             self._relay_webhook_logs.insert(0, entry)
@@ -266,6 +282,7 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
             "statusCode": entry.status_code,
             "responseText": entry.response_text,
             "error": entry.error,
+            "authorization": entry.token,
         }
         for entry in state.webhook_logs
     ]
@@ -295,6 +312,7 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
             "statusCode": entry.status_code,
             "responseText": entry.response_text,
             "error": entry.error,
+            "authorization": entry.token,
         }
         for entry in state.relay_webhook_logs
     ]
@@ -310,6 +328,7 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
             "mimeType": "text/plain",
             "masters": "{}",
             "webhookPayload": "{}",
+            "webhookToken": "",
             "geminiModel": settings.gemini_model,
         },
     }
@@ -530,6 +549,7 @@ def register_admin_routes(app: FastAPI) -> None:
         request: Request,
         url: str = Form(...),
         payload: str = Form(...),
+        token: str = Form(""),
     ) -> RedirectResponse:
         try:
             payload_dict = json.loads(payload)
@@ -548,8 +568,9 @@ def register_admin_routes(app: FastAPI) -> None:
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
         dispatcher: WebhookDispatcher = request.app.state.webhook_dispatcher
+        auth_token = token.strip() or None
         try:
-            response = dispatcher.send(url, payload_dict)
+            response = dispatcher.send(url, payload_dict, token=auth_token)
             response_text = response.text
             status_code = response.status_code
         except Exception as exc:
@@ -567,6 +588,7 @@ def register_admin_routes(app: FastAPI) -> None:
                     status_code=status_code,
                     response_text=response_text,
                     error=str(exc),
+                    token=auth_token,
                 )
             )
             state.add_message(
@@ -589,6 +611,7 @@ def register_admin_routes(app: FastAPI) -> None:
                 status_code=status_code,
                 response_text=response_text,
                 error=None,
+                token=auth_token,
             )
         )
         state.add_message(
