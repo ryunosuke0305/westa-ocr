@@ -1,35 +1,25 @@
 steps:
-  - name: 'gcr.io/kaniko-project/executor:latest'
+  - name: gcr.io/cloud-builders/docker # Kaniko executor から docker ビルダーに戻す
     args:
-      - '--dockerfile=Dockerfile'
-      - '--context=.'
-      - '--cache=true'
+      - build
+      - '--no-cache' # キャッシュを使用しないオプションを再度有効化
+      - '-t'
       - >-
-        --cache-repo=asia-northeast2-docker.pkg.dev/instant-river-361000/cloud-build-cache/westa-ocr-kaniko-cache
-      - >-
-        --destination=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+        $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - .
+      - '-f'
+      - Dockerfile
     id: Build
 
-  - name: 'gcr.io/cloud-builders/gcloud'
-    entrypoint: bash
+  - name: gcr.io/cloud-builders/docker # Build ステップ後にイメージを Artifact Registry にプッシュ
     args:
-      - '-c'
-      - |
-        echo "Debugging Substitutions:"
-        echo "_AR_HOSTNAME: $_AR_HOSTNAME"
-        echo "_AR_PROJECT_ID: $_AR_PROJECT_ID"
-        echo "_AR_REPOSITORY: $_AR_REPOSITORY"
-        echo "_SERVICE_NAME: $_SERVICE_NAME"
-        echo "COMMIT_SHA: $COMMIT_SHA"
-        echo "REPO_NAME: $REPO_NAME"
-        echo "Full image path from Kaniko: $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA"
-        echo "Full image path from images section: $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA"
-    id: DebugSubstitutions
+      - push
+      - >-
+        $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    id: Push
+    waitFor: ['Build'] # Build ステップが完了した後に実行
 
-  - name: 'busybox'
-    args: ['sleep', '10'] # ここを 10秒 に変更
-    id: WaitForArtifactRegistrySync
-    waitFor: ['DebugSubstitutions']
+  # DebugSubstitutions および WaitForArtifactRegistrySync ステップは削除
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: gcloud
@@ -57,7 +47,7 @@ steps:
       - '--set-env-vars=BACKOFF_INITIAL_MS=1000'
       - '--set-env-vars=DRIVE_SERVICE_ACCOUNT_JSON=/data/sa.json'
     id: Deploy
-    waitFor: ['Build', 'DebugSubstitutions', 'WaitForArtifactRegistrySync'] # ここに WaitForArtifactRegistrySync を追加
+    waitFor: ['Push'] # Deploy ステップは Push ステップが完了した後に実行
 
 images:
   - >-
