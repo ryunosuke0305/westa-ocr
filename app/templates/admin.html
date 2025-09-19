@@ -269,6 +269,61 @@
 
     <section class="card shadow-sm mt-4">
       <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">ジョブ状況</h2>
+        <span class="text-muted small">最新 20 件を表示</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-0" v-if="!state.jobs.length">ジョブ履歴はまだありません。</p>
+        <div class="table-responsive" v-else>
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th scope="col">Job ID</th>
+                <th scope="col">Order ID</th>
+                <th scope="col">ステータス</th>
+                <th scope="col">ページ進捗</th>
+                <th scope="col">更新日時</th>
+                <th scope="col">最終エラー</th>
+                <th scope="col" class="text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="job in state.jobs" :key="job.jobId">
+                <td class="text-break"><code>[[ job.jobId ]]</code></td>
+                <td class="text-break">[[ job.orderId ]]</td>
+                <td><span class="badge text-bg-secondary">[[ job.statusLabel ]]</span></td>
+                <td>
+                  [[ job.processedPages !== null && job.totalPages !== null
+                    ? job.processedPages + ' / ' + job.totalPages + (job.skippedPages !== null ? ' (skip ' + job.skippedPages + ')' : '')
+                    : '-' ]]
+                </td>
+                <td>
+                  <div>作成 [[ job.createdAt ]]</div>
+                  <div>更新 [[ job.updatedAt ]]</div>
+                </td>
+                <td class="text-break">[[ job.lastError || '-' ]]</td>
+                <td class="text-center">
+                  <form
+                    v-if="job.canCancel"
+                    method="post"
+                    action="/admin/jobs/cancel"
+                    class="d-inline"
+                  >
+                    <input type="hidden" name="job_id" :value="job.jobId" />
+                    <button type="submit" class="btn btn-outline-danger btn-sm">中断</button>
+                  </form>
+                  <span v-else-if="job.cancellationRequested" class="badge text-bg-warning">中断要求中</span>
+                  <span v-else>-</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card shadow-sm mt-4">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
         <h2 class="h5 mb-0">ProcessOrder_test_relay リクエスト履歴</h2>
         <span class="text-muted small">最大 50 件を表示</span>
       </div>

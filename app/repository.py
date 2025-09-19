@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .logging_config import get_logger
 from .models import JobStatus
@@ -242,6 +242,14 @@ class JobRepository:
             ).fetchone()
         return row
 
+    def get_job_status(self, job_id: str) -> Optional[str]:
+        with self._locked():
+            row = self._conn.execute(
+                "SELECT status FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return row["status"] if row else None
+
     def list_pending_jobs(self) -> List[str]:
         with self._locked():
             rows = self._conn.execute(
@@ -258,6 +266,44 @@ class JobRepository:
                 ),
             ).fetchall()
         return [row["job_id"] for row in rows]
+
+    def list_recent_jobs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._locked():
+            rows = self._conn.execute(
+                """
+                SELECT job_id,
+                       order_id,
+                       status,
+                       last_error,
+                       total_pages,
+                       processed_pages,
+                       skipped_pages,
+                       created_at,
+                       updated_at
+                  FROM jobs
+              ORDER BY created_at DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        jobs: List[Dict[str, Any]] = []
+        for row in rows:
+            created_at = datetime.fromisoformat(row["created_at"]) if row["created_at"] else None
+            updated_at = datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None
+            jobs.append(
+                {
+                    "job_id": row["job_id"],
+                    "order_id": row["order_id"],
+                    "status": row["status"],
+                    "last_error": row["last_error"],
+                    "total_pages": row["total_pages"],
+                    "processed_pages": row["processed_pages"],
+                    "skipped_pages": row["skipped_pages"],
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }
+            )
+        return jobs
 
     def mark_enqueued(self, job_id: str) -> None:
         with self._locked():
