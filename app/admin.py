@@ -195,6 +195,7 @@ CONFIG_FIELDS: List[Dict[str, str]] = [
     {"env": "SQLITE_PATH", "label": "SQLite Path", "placeholder": "<DATA_DIR>/relay.db"},
     {"env": "TMP_DIR", "label": "Temporary Directory", "placeholder": "<DATA_DIR>/tmp"},
     {"env": "WORKER_IDLE_SLEEP", "label": "Worker Idle Sleep", "placeholder": "秒数 (例: 1.0)"},
+    {"env": "WORKER_COUNT", "label": "Worker Count", "placeholder": "スレッド数 (例: 4)"},
     {"env": "GEMINI_API_KEY", "label": "Gemini API Key", "placeholder": "Google AI Studio の API キー"},
     {"env": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "例: gemini-2.5-flash"},
     {"env": "WEBHOOK_TIMEOUT", "label": "Webhook Timeout", "placeholder": "秒数 (例: 30)"},
@@ -377,9 +378,11 @@ def _build_admin_gemini_request_snapshot(
 
 def _reload_components(app: FastAPI, settings: Settings) -> None:
     LOGGER.info("Reloading application components via admin console")
-    worker: JobWorker = app.state.worker
-    worker.stop()
-    worker.join(timeout=10)
+    workers: List[JobWorker] = getattr(app.state, "workers", [])
+    for worker in workers:
+        worker.stop()
+    for worker in workers:
+        worker.join(timeout=10)
 
     file_fetcher: FileFetcher = app.state.file_fetcher
     gemini_client: GeminiClient = app.state.gemini_client
@@ -399,21 +402,26 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
         timeout=settings.request_timeout,
     )
     new_webhook = WebhookDispatcher(settings.webhook_timeout)
-    new_worker = JobWorker(
-        repository=app.state.repository,
-        job_queue=app.state.job_queue,
-        file_fetcher=new_file_fetcher,
-        gemini_client=new_gemini,
-        webhook_dispatcher=new_webhook,
-        idle_sleep=settings.worker_idle_sleep,
-        admin_state=app.state.admin_state,
-    )
-    new_worker.start()
+    new_workers = [
+        JobWorker(
+            repository=app.state.repository,
+            job_queue=app.state.job_queue,
+            file_fetcher=new_file_fetcher,
+            gemini_client=new_gemini,
+            webhook_dispatcher=new_webhook,
+            idle_sleep=settings.worker_idle_sleep,
+            admin_state=app.state.admin_state,
+            name=f"JobWorker-{index + 1}",
+        )
+        for index in range(settings.worker_count)
+    ]
+    for worker in new_workers:
+        worker.start()
 
     app.state.file_fetcher = new_file_fetcher
     app.state.gemini_client = new_gemini
     app.state.webhook_dispatcher = new_webhook
-    app.state.worker = new_worker
+    app.state.workers = new_workers
 
 
 def register_admin_routes(app: FastAPI) -> None:
