@@ -249,18 +249,21 @@ function ProcessOrder_test_relay(PROMPT, PATTERN) {
  *
  * デプロイ: 「ウェブアプリとして導入」し、WEBHOOK_URL にそのURL(/exec)を設定。
  * リレー→GASのHTTPヘッダーに Authorization: Bearer WEBHOOK_TOKEN を付与する想定。
+ * Apps Script 側では `doPost(e)` からヘッダーへ直接アクセスできないため、
+ * ペイロード本体の `token` フィールドに同じ値が入っていることを前提に検証する。
  */
 function doPost(e) {
   try {
+    const raw = e.postData && e.postData.contents ? e.postData.contents : '';
+    const payload = raw ? JSON.parse(raw) : {};
+
     // Bearerトークン検証
-    const ok = verifyBearerTokenForWebhook_(e);
+    const ok = verifyBearerTokenForWebhook_(payload, e);
     if (!ok) {
       return ContentService.createTextOutput(JSON.stringify({ error: 'unauthorized' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    const raw = e.postData && e.postData.contents ? e.postData.contents : '';
-    const payload = raw ? JSON.parse(raw) : {};
     const event = payload.event;
 
     if (event === 'PAGE_RESULT') {
@@ -400,14 +403,18 @@ function makeAuthHeadersForRelayTokenOnly_(RELAY_TOKEN) {
 
 /**
  * WebhookのBearerトークン検証
- * - 受信ヘッダー Authorization: Bearer <token> を検査
+ * - ペイロードの token フィールド、もしくは Authorization ヘッダーを検査
  * - スクリプトプロパティ WEBHOOK_TOKEN と一致したらOK
  */
-function verifyBearerTokenForWebhook_(e) {
+function verifyBearerTokenForWebhook_(payload, e) {
   const WEBHOOK_TOKEN = PropertiesService.getScriptProperties().getProperty('WEBHOOK_TOKEN');
   if (!WEBHOOK_TOKEN) {
     console.error('WEBHOOK_TOKEN not set.');
     return false;
+  }
+  const tokenFromPayload = payload && payload.token ? String(payload.token).trim() : '';
+  if (tokenFromPayload && tokenFromPayload === WEBHOOK_TOKEN) {
+    return true;
   }
   const auth =
     (e && e.parameter && e.parameter['Authorization']) ||

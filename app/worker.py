@@ -222,6 +222,7 @@ class JobWorker(threading.Thread):
         )
 
     def _send_page_result(self, job_row, page_index: int, result) -> Optional[str]:
+        token = job_row["webhook_token"] or None
         payload = {
             "event": "PAGE_RESULT",
             "jobId": job_row["job_id"],
@@ -231,8 +232,8 @@ class JobWorker(threading.Thread):
             "rawText": result.text,
             "meta": result.meta,
             "idempotencyKey": f"{job_row['order_id']}:{page_index}",
+            "token": token,
         }
-        token = job_row["webhook_token"] or None
         try:
             response = self._webhook.send(job_row["webhook_url"], payload, token=token)
         except Exception as exc:
@@ -286,6 +287,7 @@ class JobWorker(threading.Thread):
         errors: list[Dict[str, str]],
         status: Optional[JobStatus] = None,
     ) -> None:
+        token = job_row["webhook_token"] or None
         payload = {
             "event": "JOB_SUMMARY",
             "jobId": job_row["job_id"],
@@ -294,10 +296,10 @@ class JobWorker(threading.Thread):
             "processedPages": processed_pages,
             "skippedPages": skipped_pages,
             "errors": errors,
+            "token": token,
         }
         if status is not None:
             payload["status"] = status.value
-        token = job_row["webhook_token"] or None
         try:
             response = self._webhook.send(job_row["webhook_url"], payload, token=token)
         except Exception as exc:
@@ -341,7 +343,10 @@ class JobWorker(threading.Thread):
     ) -> None:
         if self._admin_state is None:
             return
-        payload_text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        payload_for_log = dict(payload)
+        if payload_for_log.get("token"):
+            payload_for_log["token"] = "***"
+        payload_text = json.dumps(payload_for_log, ensure_ascii=False, indent=2, sort_keys=True)
         self._admin_state.add_relay_webhook_log(
             job_id=job_row["job_id"],
             order_id=job_row["order_id"],
