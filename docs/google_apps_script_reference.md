@@ -248,22 +248,19 @@ function ProcessOrder_test_relay(PROMPT, PATTERN) {
  * 「明細一覧」「注文一覧」を更新する。
  *
  * デプロイ: 「ウェブアプリとして導入」し、WEBHOOK_URL にそのURL(/exec)を設定。
- * リレー→GASのHTTPヘッダーに Authorization: Bearer WEBHOOK_TOKEN を付与する想定。
- * Apps Script 側では `doPost(e)` からヘッダーへ直接アクセスできないため、
- * ペイロード本体の `token` フィールドに同じ値が入っていることを前提に検証する。
  */
 function doPost(e) {
   try {
-    const raw = e.postData && e.postData.contents ? e.postData.contents : '';
-    const payload = raw ? JSON.parse(raw) : {};
-
     // Bearerトークン検証
-    const ok = verifyBearerTokenForWebhook_(payload, e);
+    const ok = verifyTokenFromBody_(e);
     if (!ok) {
+      logToSheet("認証に失敗");
       return ContentService.createTextOutput(JSON.stringify({ error: 'unauthorized' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    const raw = e.postData && e.postData.contents ? e.postData.contents : '';
+    const payload = raw ? JSON.parse(raw) : {};
     const event = payload.event;
 
     if (event === 'PAGE_RESULT') {
@@ -275,7 +272,7 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
-    console.error('doPost error:', err.stack || err);
+    logToSheet(err.message);
     return ContentService.createTextOutput(JSON.stringify({ error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -290,6 +287,8 @@ function handlePageResult_(payload) {
   const SPREADSHEET_ID = '193JwqYPME-f33UdyfBxEDkCCWimxppnC2CE9L7PrqoQ';
   const SHEET_DETAILS_NAME = '明細一覧';
 
+  logToSheet("ページ処理開始");
+  logToSheet(payload);
   // 冪等チェック
   const orderId = payload.orderId;
   const pageIndex = payload.pageIndex;
@@ -299,6 +298,7 @@ function handlePageResult_(payload) {
   const props = PropertiesService.getScriptProperties();
   if (props.getProperty(idemKey) === '1') {
     // 既に処理済み
+    logToSheet("重複したリクエストを検出");
     return ContentService.createTextOutput(JSON.stringify({ ok: true, duplicate: true }))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -306,6 +306,7 @@ function handlePageResult_(payload) {
   if (isNonOrderPage) {
     // 注文書ではないページ → 既読フラグだけ付与
     props.setProperty(idemKey, '1');
+    logToSheet("注文書ではないページを検出");
     return ContentService.createTextOutput(JSON.stringify({ ok: true, skipped: true }))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -314,6 +315,7 @@ function handlePageResult_(payload) {
   const sheetDetails = spreadsheet.getSheetByName(SHEET_DETAILS_NAME);
 
   const rawText = payload.rawText || '';
+  logToSheet(rawText);
   const pages = parseMultiPageDataFromLLM(rawText); // 1ページ分でも既存関数を流用可
 
   pages.forEach(pageData => {
@@ -402,27 +404,25 @@ function makeAuthHeadersForRelayTokenOnly_(RELAY_TOKEN) {
 }
 
 /**
- * WebhookのBearerトークン検証
- * - ペイロードの token フィールド、もしくは Authorization ヘッダーを検査
+ * Webhookのトークン検証（JSONボディの token を検査）
  * - スクリプトプロパティ WEBHOOK_TOKEN と一致したらOK
  */
-function verifyBearerTokenForWebhook_(payload, e) {
+function verifyTokenFromBody_(e) {
   const WEBHOOK_TOKEN = PropertiesService.getScriptProperties().getProperty('WEBHOOK_TOKEN');
   if (!WEBHOOK_TOKEN) {
     console.error('WEBHOOK_TOKEN not set.');
     return false;
   }
-  const tokenFromPayload = payload && payload.token ? String(payload.token).trim() : '';
-  if (tokenFromPayload && tokenFromPayload === WEBHOOK_TOKEN) {
-    return true;
+  try {
+    const raw = e && e.postData && e.postData.contents ? e.postData.contents : '';
+    if (!raw) return false;
+    const payload = JSON.parse(raw);
+    const token = payload && payload.token ? String(payload.token) : '';
+    return token === WEBHOOK_TOKEN;
+  } catch (err) {
+    console.error('verifyTokenFromBody_ parse error:', err);
+    return false;
   }
-  const auth =
-    (e && e.parameter && e.parameter['Authorization']) ||
-    (e && e.headers && (e.headers['Authorization'] || e.headers['authorization'])) ||
-    '';
-  if (!auth || !auth.toString().startsWith('Bearer ')) return false;
-  const token = auth.toString().substring('Bearer '.length).trim();
-  return token && token === WEBHOOK_TOKEN;
 }
 
 
@@ -596,5 +596,28 @@ function generateRandomID() {
   }
   return randomId;
 }
+
+//doPostログ出力用
+function logToSheet(logMessage) {
+  const SPREADSHEET_ID = '193JwqYPME-f33UdyfBxEDkCCWimxppnC2CE9L7PrqoQ';
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var logSheet = ss.getSheetByName("log");
+
+  // If the "log" sheet doesn't exist, create it
+  if (!logSheet) {
+    logSheet = ss.insertSheet("log");
+  }
+
+  // Set the locale to Japan Standard Time for consistent timestamping
+  var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss");
+
+  // Insert a new row at the very top (row 1)
+  logSheet.insertRows(1, 1);
+
+  // Write the timestamp to Column A (A1) and the log message to Column B (B1) of the new top row
+  logSheet.getRange("A1").setValue(timestamp);
+  logSheet.getRange("B1").setValue(logMessage);
+}
+
 
 ```
