@@ -18,6 +18,7 @@ class Settings:
     data_dir: Path
     tmp_dir: Path
     worker_idle_sleep: float
+    worker_count: int
     gemini_api_key: Optional[str]
     gemini_model: str
     webhook_timeout: float
@@ -33,6 +34,20 @@ def _read_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:  # pragma: no cover - defensive guard
         raise ValueError(f"Environment variable {name} must be a float, got {raw!r}") from exc
+
+
+def _read_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError as exc:  # pragma: no cover - defensive guard
+            raise ValueError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ValueError(f"Environment variable {name} must be >= {minimum}, got {value}")
+    return value
 
 
 @lru_cache(maxsize=1)
@@ -60,6 +75,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         tmp_dir=tmp_dir,
         worker_idle_sleep=_read_float("WORKER_IDLE_SLEEP", 1.0),
+        worker_count=_read_int("WORKER_COUNT", 1, minimum=1),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         webhook_timeout=_read_float("WEBHOOK_TIMEOUT", 30.0),

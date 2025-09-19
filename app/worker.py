@@ -34,8 +34,9 @@ class JobWorker(threading.Thread):
         webhook_dispatcher: WebhookDispatcher,
         idle_sleep: float,
         admin_state: "AdminState | None" = None,
+        name: str | None = None,
     ) -> None:
-        super().__init__(daemon=True)
+        super().__init__(daemon=True, name=name)
         self._repository = repository
         self._queue = job_queue
         self._file_fetcher = file_fetcher
@@ -49,7 +50,7 @@ class JobWorker(threading.Thread):
         self._stop_event.set()
 
     def run(self) -> None:  # pragma: no cover - threading logic
-        LOGGER.info("Worker thread started")
+        LOGGER.info("Worker thread started", extra={"threadName": self.name})
         while not self._stop_event.is_set():
             try:
                 job_id = self._queue.get(timeout=self._idle_sleep)
@@ -62,7 +63,7 @@ class JobWorker(threading.Thread):
                 self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
             finally:
                 self._queue.task_done()
-        LOGGER.info("Worker thread stopped")
+        LOGGER.info("Worker thread stopped", extra={"threadName": self.name})
 
     def _process_job(self, job_id: str) -> None:
         job_row = self._repository.get_job(job_id)
