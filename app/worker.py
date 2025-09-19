@@ -113,6 +113,28 @@ class JobWorker(threading.Thread):
         page_errors: list[Dict[str, str]] = []
 
         for page in pages:
+            target_model = gemini_config.get("model") or self._gemini.default_model
+            request_snapshot = {
+                "jobId": job_row["job_id"],
+                "orderId": job_row["order_id"],
+                "pageIndex": page.index,
+                "prompt": job_row["prompt"],
+                "promptLength": len(job_row["prompt"]),
+                "masters": masters,
+                "mastersKeys": sorted(masters.keys()),
+                "input": {
+                    "mode": "pdf_page",
+                    "mimeType": page.mime_type,
+                    "sizeBytes": len(page.data),
+                },
+                "parameters": {
+                    "model": target_model,
+                    "temperature": gemini_config.get("temperature"),
+                    "topP": gemini_config.get("topP"),
+                    "topK": gemini_config.get("topK"),
+                    "maxOutputTokens": gemini_config.get("maxOutputTokens"),
+                },
+            }
             try:
                 result = self._gemini.generate(
                     model=gemini_config.get("model"),
@@ -124,6 +146,17 @@ class JobWorker(threading.Thread):
                     top_p=gemini_config.get("topP"),
                     top_k=gemini_config.get("topK"),
                     max_output_tokens=gemini_config.get("maxOutputTokens"),
+                )
+                self._repository.record_gemini_log(
+                    source="worker",
+                    prompt=job_row["prompt"],
+                    model=target_model,
+                    mime_type=page.mime_type,
+                    request=request_snapshot,
+                    success=True,
+                    response_text=result.text,
+                    meta=result.meta,
+                    error=None,
                 )
                 self._repository.record_page_result(
                     job_id,
@@ -140,6 +173,17 @@ class JobWorker(threading.Thread):
                 else:
                     processed_pages += 1
             except Exception as exc:
+                self._repository.record_gemini_log(
+                    source="worker",
+                    prompt=job_row["prompt"],
+                    model=target_model,
+                    mime_type=page.mime_type,
+                    request=request_snapshot,
+                    success=False,
+                    response_text=None,
+                    meta=None,
+                    error=str(exc),
+                )
                 LOGGER.exception("Failed to process page", extra={"jobId": job_id, "pageIndex": page.index})
                 self._repository.record_page_result(
                     job_id,
