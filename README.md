@@ -100,6 +100,9 @@ GAS(doPost) で検証・保存・集計
 - `Content-Type`: `application/json`
 - `Authorization`: `Bearer <WEBHOOK_TOKEN>` （設定時）
 
+> **備考**: Google Apps Script の `doPost(e)` では `Authorization` ヘッダーを直接参照できないため、
+> ペイロード本体にも `token` フィールドを含めて同じ値を渡します。
+
 ### 4.2 ページごとの結果: `event=PAGE_RESULT`
 ```jsonc
 {
@@ -115,7 +118,8 @@ GAS(doPost) で検証・保存・集計
     "tokensInput": 0,
     "tokensOutput": 0
   },
-  "idempotencyKey": "abc123:3"             // orderId:pageIndex 形式を推奨（pageIndex は 1 始まり）
+  "idempotencyKey": "abc123:3",            // orderId:pageIndex 形式を推奨（pageIndex は 1 始まり）
+  "token": "<WEBHOOK_TOKEN>"               // Apps Script での検証用（ヘッダーと同値）
 }
 ```
 
@@ -129,7 +133,8 @@ GAS(doPost) で検証・保存・集計
   "processedPages": 6,                      // isNonOrderPage を除く
   "skippedPages": 1,
   "errors": [],                             // ページ単位の失敗やタイムアウトがあれば配列で返す
-  "status": "DONE"                         // 任意。ジョブの最終ステータス（DONE / ERROR）
+  "status": "DONE",                        // 任意。ジョブの最終ステータス（DONE / ERROR）
+  "token": "<WEBHOOK_TOKEN>"               // Apps Script での検証用（ヘッダーと同値）
 }
 ```
 
