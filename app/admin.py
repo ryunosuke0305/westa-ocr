@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import FastAPI, Form, Request, status
 from fastapi.responses import RedirectResponse
@@ -18,9 +18,10 @@ from fastapi.templating import Jinja2Templates
 from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
 from .logging_config import configure_logging, get_logger
+from .models import JobStatus
 from .settings import Settings, get_settings
 from .webhook import WebhookDispatcher
-from .worker import JobWorker
+from .worker import JobWorker, CANCELLATION_MESSAGE
 
 LOGGER = get_logger(__name__)
 
@@ -102,6 +103,7 @@ class AdminState:
         self._relay_request_logs: List[RelayRequestLogEntry] = []
         self._relay_webhook_logs: List[RelayWebhookLogEntry] = []
         self._messages: List[AdminMessage] = []
+        self._cancel_requests: Set[str] = set()
 
     @property
     def webhook_logs(self) -> List[WebhookLogEntry]:
@@ -122,6 +124,18 @@ class AdminState:
     def messages(self) -> List[AdminMessage]:
         with self._lock:
             return list(self._messages)
+
+    def is_job_cancelled(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._cancel_requests
+
+    def request_job_cancel(self, job_id: str) -> None:
+        with self._lock:
+            self._cancel_requests.add(job_id)
+
+    def clear_job_cancel(self, job_id: str) -> None:
+        with self._lock:
+            self._cancel_requests.discard(job_id)
 
     def add_webhook_log(self, entry: WebhookLogEntry) -> None:
         entry = replace(entry, token=_mask_token(entry.token))
@@ -194,11 +208,12 @@ CONFIG_FIELDS: List[Dict[str, str]] = [
     {"env": "DATA_DIR", "label": "Data Directory", "placeholder": "/data"},
     {"env": "SQLITE_PATH", "label": "SQLite Path", "placeholder": "<DATA_DIR>/relay.db"},
     {"env": "TMP_DIR", "label": "Temporary Directory", "placeholder": "<DATA_DIR>/tmp"},
-    {"env": "WORKER_IDLE_SLEEP", "label": "Worker Idle Sleep", "placeholder": "秒数 (例: 1.0)"},
+    {"env": "WORKER_IDLE_SLEEP", "label": "Worker Idle Sleep", "placeholder": "秒数 (例: 1)"},
+    {"env": "WORKER_COUNT", "label": "Worker Count", "placeholder": "スレッド数 (例: 10)"},
     {"env": "GEMINI_API_KEY", "label": "Gemini API Key", "placeholder": "Google AI Studio の API キー"},
     {"env": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "例: gemini-2.5-flash"},
     {"env": "WEBHOOK_TIMEOUT", "label": "Webhook Timeout", "placeholder": "秒数 (例: 30)"},
-    {"env": "REQUEST_TIMEOUT", "label": "Request Timeout", "placeholder": "秒数 (例: 60)"},
+    {"env": "REQUEST_TIMEOUT", "label": "Request Timeout", "placeholder": "秒数 (例: 600)"},
     {"env": "LOG_LEVEL", "label": "Log Level", "placeholder": "例: INFO / DEBUG"},
 ]
 
@@ -208,7 +223,10 @@ def _format_datetime(value: datetime) -> str:
 
 
 def _build_dashboard_payload(
-    settings: Settings, state: AdminState, gemini_logs: List[Dict[str, Any]]
+    settings: Settings,
+    state: AdminState,
+    gemini_logs: List[Dict[str, Any]],
+    jobs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     config_fields = []
     for field in CONFIG_FIELDS:
@@ -299,6 +317,30 @@ def _build_dashboard_payload(
         for entry in state.relay_webhook_logs
     ]
 
+    cancelable_statuses = {
+        JobStatus.RECEIVED.value,
+        JobStatus.ENQUEUED.value,
+        JobStatus.PROCESSING.value,
+    }
+
+    job_entries = []
+    for job in jobs:
+        job_entries.append(
+            {
+                "jobId": job["job_id"],
+                "orderId": job["order_id"],
+                "status": job["status"],
+                "statusLabel": job["status"],
+                "createdAt": _format_datetime(job["created_at"]),
+                "updatedAt": _format_datetime(job["updated_at"]),
+                "totalPages": job["total_pages"],
+                "processedPages": job["processed_pages"],
+                "skippedPages": job["skipped_pages"],
+                "lastError": job["last_error"],
+                "canCancel": job["status"] in cancelable_statuses,
+            }
+        )
+
     return {
         "configFields": config_fields,
         "messages": messages,
@@ -306,6 +348,7 @@ def _build_dashboard_payload(
         "webhookLogs": webhook_logs,
         "relayRequestLogs": relay_request_logs,
         "relayWebhookLogs": relay_webhook_logs,
+        "jobs": job_entries,
         "defaults": {
             "mimeType": "text/plain",
             "masters": "{}",
@@ -377,9 +420,11 @@ def _build_admin_gemini_request_snapshot(
 
 def _reload_components(app: FastAPI, settings: Settings) -> None:
     LOGGER.info("Reloading application components via admin console")
-    worker: JobWorker = app.state.worker
-    worker.stop()
-    worker.join(timeout=10)
+    workers: List[JobWorker] = getattr(app.state, "workers", [])
+    for worker in workers:
+        worker.stop()
+    for worker in workers:
+        worker.join(timeout=10)
 
     file_fetcher: FileFetcher = app.state.file_fetcher
     gemini_client: GeminiClient = app.state.gemini_client
@@ -399,21 +444,26 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
         timeout=settings.request_timeout,
     )
     new_webhook = WebhookDispatcher(settings.webhook_timeout)
-    new_worker = JobWorker(
-        repository=app.state.repository,
-        job_queue=app.state.job_queue,
-        file_fetcher=new_file_fetcher,
-        gemini_client=new_gemini,
-        webhook_dispatcher=new_webhook,
-        idle_sleep=settings.worker_idle_sleep,
-        admin_state=app.state.admin_state,
-    )
-    new_worker.start()
+    new_workers = [
+        JobWorker(
+            repository=app.state.repository,
+            job_queue=app.state.job_queue,
+            file_fetcher=new_file_fetcher,
+            gemini_client=new_gemini,
+            webhook_dispatcher=new_webhook,
+            idle_sleep=settings.worker_idle_sleep,
+            admin_state=app.state.admin_state,
+            name=f"JobWorker-{index + 1}",
+        )
+        for index in range(settings.worker_count)
+    ]
+    for worker in new_workers:
+        worker.start()
 
     app.state.file_fetcher = new_file_fetcher
     app.state.gemini_client = new_gemini
     app.state.webhook_dispatcher = new_webhook
-    app.state.worker = new_worker
+    app.state.workers = new_workers
 
 
 def register_admin_routes(app: FastAPI) -> None:
@@ -424,7 +474,8 @@ def register_admin_routes(app: FastAPI) -> None:
         settings: Settings = request.app.state.settings
         repository = request.app.state.repository
         gemini_logs = repository.list_gemini_logs(limit=10)
-        payload = _build_dashboard_payload(settings, state, gemini_logs)
+        recent_jobs = repository.list_recent_jobs(limit=20)
+        payload = _build_dashboard_payload(settings, state, gemini_logs, recent_jobs)
         return templates.TemplateResponse("admin.html", {"request": request, "dashboard": payload})
 
     @app.post("/admin/gemini")
@@ -670,6 +721,32 @@ def register_admin_routes(app: FastAPI) -> None:
                 detail=f"HTTP {status_code}",
             )
         )
+        return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/admin/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str, request: Request) -> RedirectResponse:
+        repository = request.app.state.repository
+        if repository.cancel_job(job_id, reason=CANCELLATION_MESSAGE):
+            state.request_job_cancel(job_id)
+            state.add_message(
+                AdminMessage(
+                    timestamp=datetime.utcnow(),
+                    category="jobs",
+                    success=True,
+                    summary=f"ジョブ {job_id} を中断しました",
+                    detail=CANCELLATION_MESSAGE,
+                )
+            )
+        else:
+            state.add_message(
+                AdminMessage(
+                    timestamp=datetime.utcnow(),
+                    category="jobs",
+                    success=False,
+                    summary=f"ジョブ {job_id} の中断に失敗しました",
+                    detail="対象のジョブが見つからないか、すでに完了しています",
+                )
+            )
         return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/settings")

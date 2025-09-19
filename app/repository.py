@@ -242,6 +242,42 @@ class JobRepository:
             ).fetchone()
         return row
 
+    def get_job_status(self, job_id: str) -> Optional[str]:
+        with self._locked():
+            row = self._conn.execute(
+                "SELECT status FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return row["status"] if row else None
+
+    def cancel_job(self, job_id: str, *, reason: Optional[str] = None) -> bool:
+        cancellable = {
+            JobStatus.RECEIVED.value,
+            JobStatus.ENQUEUED.value,
+            JobStatus.PROCESSING.value,
+        }
+        cancellation_reason = reason or "Cancelled via admin console"
+        with self._locked():
+            row = self._conn.execute(
+                "SELECT status FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["status"] not in cancellable:
+                return False
+            self._conn.execute(
+                """
+                UPDATE jobs
+                   SET status = ?,
+                       last_error = ?,
+                       updated_at = datetime('now')
+                 WHERE job_id = ?
+                """,
+                (JobStatus.CANCELLED.value, cancellation_reason, job_id),
+            )
+        return True
+
     def list_pending_jobs(self) -> List[str]:
         with self._locked():
             rows = self._conn.execute(
@@ -258,6 +294,46 @@ class JobRepository:
                 ),
             ).fetchall()
         return [row["job_id"] for row in rows]
+
+    def list_recent_jobs(self, limit: int = 20) -> List[Dict]:
+        with self._locked():
+            rows = self._conn.execute(
+                """
+                SELECT job_id, order_id, status, created_at, updated_at,
+                       total_pages, processed_pages, skipped_pages, last_error
+                  FROM jobs
+                 ORDER BY updated_at DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        jobs: List[Dict] = []
+        for row in rows:
+            created_at = row["created_at"]
+            updated_at = row["updated_at"]
+            try:
+                created = datetime.fromisoformat(created_at)
+            except ValueError:
+                created = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+            try:
+                updated = datetime.fromisoformat(updated_at)
+            except ValueError:
+                updated = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
+            jobs.append(
+                {
+                    "job_id": row["job_id"],
+                    "order_id": row["order_id"],
+                    "status": row["status"],
+                    "created_at": created,
+                    "updated_at": updated,
+                    "total_pages": row["total_pages"],
+                    "processed_pages": row["processed_pages"],
+                    "skipped_pages": row["skipped_pages"],
+                    "last_error": row["last_error"],
+                }
+            )
+        return jobs
 
     def mark_enqueued(self, job_id: str) -> None:
         with self._locked():

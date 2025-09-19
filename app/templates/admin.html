@@ -85,6 +85,58 @@
             </form>
           </div>
         </section>
+        <section class="card shadow-sm mt-4">
+          <div class="card-header bg-white d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">ジョブの状態</h2>
+            <span class="text-muted small">最新 20 件</span>
+          </div>
+          <div class="card-body">
+            <p class="text-muted mb-0" v-if="!state.jobs.length">ジョブはまだ登録されていません。</p>
+            <div class="table-responsive" v-else>
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th scope="col">ジョブ ID</th>
+                    <th scope="col">状態</th>
+                    <th scope="col">進捗</th>
+                    <th scope="col">更新時刻</th>
+                    <th scope="col" class="text-end">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="job in state.jobs" :key="job.jobId">
+                    <td class="text-break">
+                      <div class="fw-semibold">[[ job.jobId ]]</div>
+                      <div class="small text-muted">Order [[ job.orderId ]]</div>
+                    </td>
+                    <td>
+                      <span class="badge" :class="statusBadgeClass(job.status)">[[ job.status ]]</span>
+                    </td>
+                    <td>
+                      <div>[[ formatJobProgress(job) ]]</div>
+                      <div class="small text-danger" v-if="job.lastError">[[ job.lastError ]]</div>
+                    </td>
+                    <td class="small text-muted">
+                      <div>更新 [[ job.updatedAt ]]</div>
+                      <div>作成 [[ job.createdAt ]]</div>
+                    </td>
+                    <td class="text-end">
+                      <form
+                        v-if="job.canCancel"
+                        method="post"
+                        :action="`/admin/jobs/${job.jobId}/cancel`"
+                        class="d-inline"
+                      >
+                        <button type="submit" class="btn btn-sm btn-outline-danger">中断</button>
+                      </form>
+                      <span v-else class="text-muted small">-</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       </div>
       <div class="col-lg-7">
         <section class="card shadow-sm mb-4">
@@ -536,6 +588,30 @@
           } catch (error) {
             return String(value);
           }
+        },
+        statusBadgeClass(status) {
+          switch (status) {
+            case 'DONE':
+              return 'text-bg-success';
+            case 'ERROR':
+              return 'text-bg-danger';
+            case 'CANCELLED':
+              return 'text-bg-secondary';
+            case 'PROCESSING':
+              return 'text-bg-warning';
+            default:
+              return 'text-bg-primary';
+          }
+        },
+        formatJobProgress(job) {
+          const processed = job.processedPages ?? 0;
+          const total = job.totalPages;
+          const skipped = job.skippedPages ?? 0;
+          const base = total === null || total === undefined ? `${processed}` : `${processed} / ${total}`;
+          if (skipped && (total !== null && total !== undefined)) {
+            return `${base} (スキップ ${skipped})`;
+          }
+          return base;
         },
       },
     });

@@ -20,6 +20,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing helper
 
 LOGGER = get_logger(__name__)
 
+CANCELLATION_MESSAGE = "管理画面から中断されました"
+
 
 class JobWorker(threading.Thread):
     """Threaded worker that processes jobs from the database queue."""
@@ -34,8 +36,9 @@ class JobWorker(threading.Thread):
         webhook_dispatcher: WebhookDispatcher,
         idle_sleep: float,
         admin_state: "AdminState | None" = None,
+        name: str | None = None,
     ) -> None:
-        super().__init__(daemon=True)
+        super().__init__(daemon=True, name=name)
         self._repository = repository
         self._queue = job_queue
         self._file_fetcher = file_fetcher
@@ -49,7 +52,7 @@ class JobWorker(threading.Thread):
         self._stop_event.set()
 
     def run(self) -> None:  # pragma: no cover - threading logic
-        LOGGER.info("Worker thread started")
+        LOGGER.info("Worker thread started", extra={"threadName": self.name})
         while not self._stop_event.is_set():
             try:
                 job_id = self._queue.get(timeout=self._idle_sleep)
@@ -62,164 +65,211 @@ class JobWorker(threading.Thread):
                 self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
             finally:
                 self._queue.task_done()
-        LOGGER.info("Worker thread stopped")
+        LOGGER.info("Worker thread stopped", extra={"threadName": self.name})
 
     def _process_job(self, job_id: str) -> None:
-        job_row = self._repository.get_job(job_id)
-        if job_row is None:
-            LOGGER.warning("Job not found when processing", extra={"jobId": job_id})
-            return
-
-        if job_row["status"] not in (JobStatus.RECEIVED.value, JobStatus.ENQUEUED.value, JobStatus.PROCESSING.value):
-            LOGGER.info("Skipping job in terminal state", extra={"jobId": job_id, "status": job_row["status"]})
-            return
-
-        self._repository.update_job_status(job_id, JobStatus.PROCESSING)
-        LOGGER.info("Processing job", extra={"jobId": job_id, "orderId": job_row["order_id"]})
-        masters = json.loads(job_row["masters_json"])
-        gemini_config = json.loads(job_row["gemini_json"]) if job_row["gemini_json"] else {}
-        options = json.loads(job_row["options_json"]) if job_row["options_json"] else {}
-        split_mode = (options.get("splitMode") or "pdf").lower()
-
+        cancellation_reason: Optional[str] = None
+        cancel_requested = False
         try:
-            file_bytes = self._file_fetcher.fetch(job_row["file_id"])
-        except Exception as exc:
-            self._handle_initial_failure(
-                job_row,
-                job_id,
-                log_message="Failed to fetch source file",
-                error_prefix="file fetch failed",
-                exc=exc,
-            )
-            return
+            job_row = self._repository.get_job(job_id)
+            if job_row is None:
+                LOGGER.warning("Job not found when processing", extra={"jobId": job_id})
+                return
 
-        pages: list[PagePayload]
-        try:
-            if split_mode != "pdf":
-                raise NotImplementedError("Only splitMode=pdf is currently supported")
-            pages = split_pdf(file_bytes)
-        except Exception as exc:
-            self._handle_initial_failure(
-                job_row,
-                job_id,
-                log_message="Failed to split PDF",
-                error_prefix="split failed",
-                exc=exc,
-            )
-            return
+            if job_row["status"] not in (
+                JobStatus.RECEIVED.value,
+                JobStatus.ENQUEUED.value,
+                JobStatus.PROCESSING.value,
+            ):
+                LOGGER.info(
+                    "Skipping job in terminal state",
+                    extra={"jobId": job_id, "status": job_row["status"]},
+                )
+                return
 
-        total_pages = len(pages)
-        processed_pages = 0
-        page_errors: list[Dict[str, str]] = []
+            self._repository.update_job_status(job_id, JobStatus.PROCESSING)
+            LOGGER.info("Processing job", extra={"jobId": job_id, "orderId": job_row["order_id"]})
+            masters = json.loads(job_row["masters_json"])
+            gemini_config = json.loads(job_row["gemini_json"]) if job_row["gemini_json"] else {}
+            options = json.loads(job_row["options_json"]) if job_row["options_json"] else {}
+            split_mode = (options.get("splitMode") or "pdf").lower()
 
-        for page in pages:
-            target_model = gemini_config.get("model") or self._gemini.default_model
-            request_snapshot = {
-                "jobId": job_row["job_id"],
-                "orderId": job_row["order_id"],
-                "pageIndex": page.index,
-                "prompt": job_row["prompt"],
-                "promptLength": len(job_row["prompt"]),
-                "masters": masters,
-                "mastersKeys": sorted(masters.keys()),
-                "input": {
-                    "mode": "pdf_page",
-                    "mimeType": page.mime_type,
-                    "sizeBytes": len(page.data),
-                },
-                "parameters": {
-                    "model": target_model,
-                    "temperature": gemini_config.get("temperature"),
-                    "topP": gemini_config.get("topP"),
-                    "topK": gemini_config.get("topK"),
-                    "maxOutputTokens": gemini_config.get("maxOutputTokens"),
-                },
-            }
             try:
-                result = self._gemini.generate(
-                    model=gemini_config.get("model"),
-                    prompt=job_row["prompt"],
-                    page_bytes=page.data,
-                    mime_type=page.mime_type,
-                    masters=masters,
-                    temperature=gemini_config.get("temperature"),
-                    top_p=gemini_config.get("topP"),
-                    top_k=gemini_config.get("topK"),
-                    max_output_tokens=gemini_config.get("maxOutputTokens"),
-                )
-                self._repository.record_gemini_log(
-                    source="worker",
-                    prompt=job_row["prompt"],
-                    model=target_model,
-                    mime_type=page.mime_type,
-                    request=request_snapshot,
-                    success=True,
-                    response_text=result.text,
-                    meta=result.meta,
-                    error=None,
-                )
-                self._repository.record_page_result(
-                    job_id,
-                    page.index,
-                    status="DONE",
-                    is_non_order_page=False,
-                    raw_text=result.text,
-                    error=None,
-                    meta=result.meta,
-                )
-                webhook_error = self._send_page_result(job_row, page.index, result)
-                if webhook_error:
-                    page_errors.append({"pageIndex": page.index, "message": webhook_error})
-                else:
-                    processed_pages += 1
+                file_bytes = self._file_fetcher.fetch(job_row["file_id"])
             except Exception as exc:
-                self._repository.record_gemini_log(
-                    source="worker",
-                    prompt=job_row["prompt"],
-                    model=target_model,
-                    mime_type=page.mime_type,
-                    request=request_snapshot,
-                    success=False,
-                    response_text=None,
-                    meta=None,
-                    error=str(exc),
-                )
-                LOGGER.exception("Failed to process page", extra={"jobId": job_id, "pageIndex": page.index})
-                self._repository.record_page_result(
+                self._handle_initial_failure(
+                    job_row,
                     job_id,
-                    page.index,
-                    status="ERROR",
-                    is_non_order_page=False,
-                    raw_text=None,
-                    error=str(exc),
-                    meta=None,
+                    log_message="Failed to fetch source file",
+                    error_prefix="file fetch failed",
+                    exc=exc,
                 )
-                page_errors.append({"pageIndex": page.index, "message": str(exc)})
+                return
 
-        skipped_pages = max(total_pages - processed_pages, 0)
+            pages: list[PagePayload]
+            try:
+                if split_mode != "pdf":
+                    raise NotImplementedError("Only splitMode=pdf is currently supported")
+                pages = split_pdf(file_bytes)
+            except Exception as exc:
+                self._handle_initial_failure(
+                    job_row,
+                    job_id,
+                    log_message="Failed to split PDF",
+                    error_prefix="split failed",
+                    exc=exc,
+                )
+                return
 
-        self._repository.update_job_counters(
-            job_id,
-            total_pages=total_pages,
-            processed_pages=processed_pages,
-            skipped_pages=skipped_pages,
-        )
+            total_pages = len(pages)
+            processed_pages = 0
+            page_errors: list[Dict[str, str]] = []
 
-        if page_errors:
-            summary_status = JobStatus.ERROR
-            self._repository.update_job_status(job_id, JobStatus.ERROR, "; ".join(err["message"] for err in page_errors))
-        else:
-            summary_status = JobStatus.DONE
-            self._repository.update_job_status(job_id, JobStatus.DONE, None)
+            if self._is_cancellation_requested(job_id):
+                cancel_requested = True
+                cancellation_reason = CANCELLATION_MESSAGE
+                LOGGER.info(
+                    "Cancellation detected before processing pages",
+                    extra={"jobId": job_id},
+                )
 
-        self._send_summary(
-            job_row,
-            total_pages=total_pages,
-            processed_pages=processed_pages,
-            skipped_pages=skipped_pages,
-            errors=page_errors,
-            status=summary_status,
-        )
+            for page in pages:
+                if cancel_requested or self._is_cancellation_requested(job_id):
+                    cancel_requested = True
+                    cancellation_reason = CANCELLATION_MESSAGE
+                    LOGGER.info(
+                        "Cancellation requested; stopping remaining pages",
+                        extra={"jobId": job_id, "pageIndex": page.index},
+                    )
+                    break
+
+                target_model = gemini_config.get("model") or self._gemini.default_model
+                request_snapshot = {
+                    "jobId": job_row["job_id"],
+                    "orderId": job_row["order_id"],
+                    "pageIndex": page.index,
+                    "prompt": job_row["prompt"],
+                    "promptLength": len(job_row["prompt"]),
+                    "masters": masters,
+                    "mastersKeys": sorted(masters.keys()),
+                    "input": {
+                        "mode": "pdf_page",
+                        "mimeType": page.mime_type,
+                        "sizeBytes": len(page.data),
+                    },
+                    "parameters": {
+                        "model": target_model,
+                        "temperature": gemini_config.get("temperature"),
+                        "topP": gemini_config.get("topP"),
+                        "topK": gemini_config.get("topK"),
+                        "maxOutputTokens": gemini_config.get("maxOutputTokens"),
+                    },
+                }
+                try:
+                    result = self._gemini.generate(
+                        model=gemini_config.get("model"),
+                        prompt=job_row["prompt"],
+                        page_bytes=page.data,
+                        mime_type=page.mime_type,
+                        masters=masters,
+                        temperature=gemini_config.get("temperature"),
+                        top_p=gemini_config.get("topP"),
+                        top_k=gemini_config.get("topK"),
+                        max_output_tokens=gemini_config.get("maxOutputTokens"),
+                    )
+                    self._repository.record_gemini_log(
+                        source="worker",
+                        prompt=job_row["prompt"],
+                        model=target_model,
+                        mime_type=page.mime_type,
+                        request=request_snapshot,
+                        success=True,
+                        response_text=result.text,
+                        meta=result.meta,
+                        error=None,
+                    )
+                    self._repository.record_page_result(
+                        job_id,
+                        page.index,
+                        status="DONE",
+                        is_non_order_page=False,
+                        raw_text=result.text,
+                        error=None,
+                        meta=result.meta,
+                    )
+                    webhook_error = self._send_page_result(job_row, page.index, result)
+                    if webhook_error:
+                        page_errors.append({"pageIndex": page.index, "message": webhook_error})
+                    else:
+                        processed_pages += 1
+                except Exception as exc:
+                    self._repository.record_gemini_log(
+                        source="worker",
+                        prompt=job_row["prompt"],
+                        model=target_model,
+                        mime_type=page.mime_type,
+                        request=request_snapshot,
+                        success=False,
+                        response_text=None,
+                        meta=None,
+                        error=str(exc),
+                    )
+                    LOGGER.exception(
+                        "Failed to process page", extra={"jobId": job_id, "pageIndex": page.index}
+                    )
+                    self._repository.record_page_result(
+                        job_id,
+                        page.index,
+                        status="ERROR",
+                        is_non_order_page=False,
+                        raw_text=None,
+                        error=str(exc),
+                        meta=None,
+                    )
+                    page_errors.append({"pageIndex": page.index, "message": str(exc)})
+
+            skipped_pages = max(total_pages - processed_pages, 0)
+
+            self._repository.update_job_counters(
+                job_id,
+                total_pages=total_pages,
+                processed_pages=processed_pages,
+                skipped_pages=skipped_pages,
+            )
+
+            if cancel_requested:
+                if cancellation_reason:
+                    page_errors.append({"message": cancellation_reason})
+                summary_status = JobStatus.CANCELLED
+                self._repository.update_job_status(job_id, JobStatus.CANCELLED, cancellation_reason)
+            elif page_errors:
+                summary_status = JobStatus.ERROR
+                self._repository.update_job_status(
+                    job_id,
+                    JobStatus.ERROR,
+                    "; ".join(err["message"] for err in page_errors if "message" in err),
+                )
+            else:
+                summary_status = JobStatus.DONE
+                self._repository.update_job_status(job_id, JobStatus.DONE, None)
+
+            self._send_summary(
+                job_row,
+                total_pages=total_pages,
+                processed_pages=processed_pages,
+                skipped_pages=skipped_pages,
+                errors=page_errors,
+                status=summary_status,
+            )
+        finally:
+            if self._admin_state is not None:
+                self._admin_state.clear_job_cancel(job_id)
+
+    def _is_cancellation_requested(self, job_id: str) -> bool:
+        if self._admin_state is not None and self._admin_state.is_job_cancelled(job_id):
+            return True
+        status = self._repository.get_job_status(job_id)
+        return status == JobStatus.CANCELLED.value
 
     def _send_page_result(self, job_row, page_index: int, result) -> Optional[str]:
         token = job_row["webhook_token"] or None
@@ -387,4 +437,4 @@ class JobWorker(threading.Thread):
         )
 
 
-__all__ = ["JobWorker"]
+__all__ = ["CANCELLATION_MESSAGE", "JobWorker"]

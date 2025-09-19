@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -8,6 +9,7 @@ os.environ.setdefault("RELAY_TOKEN", "test-token")
 
 import pytest
 
+from app.models import JobStatus
 from app.repository import JobRepository
 
 
@@ -104,4 +106,51 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     assert logs[0]["request"]["prompt"] == "second prompt"
     assert logs[1]["prompt_preview"].startswith("first prompt")
 
+    repository.close()
+
+
+def test_cancel_job_and_recent_jobs(tmp_path: Path) -> None:
+    repository = _create_repository(tmp_path)
+    repository.insert_job(
+        job_id="job_cancel",
+        order_id="order-cancel",
+        file_id="file-cancel",
+        prompt="prompt",
+        pattern=None,
+        masters={"shipCsv": "a", "itemCsv": "b"},
+        webhook={"url": "https://example.com", "token": "token"},
+        gemini=None,
+        options=None,
+        idempotency_key="order-cancel",
+    )
+    repository.mark_enqueued("job_cancel")
+
+    assert repository.cancel_job("job_cancel", reason="stop it") is True
+    row = repository.get_job("job_cancel")
+    assert row is not None
+    assert row["status"] == JobStatus.CANCELLED.value
+    assert row["last_error"] == "stop it"
+    assert repository.get_job_status("job_cancel") == JobStatus.CANCELLED.value
+    assert repository.cancel_job("job_cancel") is False
+
+    repository.insert_job(
+        job_id="job_second",
+        order_id="order-2",
+        file_id="file-2",
+        prompt="prompt",
+        pattern=None,
+        masters={"shipCsv": "a", "itemCsv": "b"},
+        webhook={"url": "https://example.com", "token": "token"},
+        gemini=None,
+        options=None,
+        idempotency_key="order-2",
+    )
+    repository.update_job_status("job_second", JobStatus.PROCESSING)
+    repository.update_job_status("job_second", JobStatus.DONE)
+
+    jobs = repository.list_recent_jobs()
+    assert jobs
+    job_ids = {job["job_id"] for job in jobs[:2]}
+    assert job_ids == {"job_second", "job_cancel"}
+    assert isinstance(jobs[0]["updated_at"], datetime)
     repository.close()

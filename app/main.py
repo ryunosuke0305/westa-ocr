@@ -229,9 +229,13 @@ def register_events(app: FastAPI) -> None:
                 app.state.file_fetcher = components["file_fetcher"]
                 app.state.gemini_client = components["gemini_client"]
                 app.state.webhook_dispatcher = components["webhook_dispatcher"]
-                app.state.worker = components["worker"]
-                app.state.worker.start()
-                LOGGER.info("Startup complete", extra={"pendingJobs": pending})
+                app.state.workers = components["workers"]
+                for worker in app.state.workers:
+                    worker.start()
+                LOGGER.info(
+                    "Startup complete",
+                    extra={"pendingJobs": pending, "workerCount": len(app.state.workers)},
+                )
             finally:
                 event.set()
 
@@ -245,9 +249,11 @@ def register_events(app: FastAPI) -> None:
         if getattr(app.state, "initialization_error", None) is not None:
             return
 
-        worker: JobWorker = app.state.worker
-        worker.stop()
-        worker.join(timeout=10)
+        workers: list[JobWorker] = getattr(app.state, "workers", [])
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            worker.join(timeout=10)
 
         app.state.webhook_dispatcher.close()
         app.state.file_fetcher.close()
@@ -280,15 +286,19 @@ def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
         webhook_dispatcher = WebhookDispatcher(settings.webhook_timeout)
         stack.callback(webhook_dispatcher.close)
 
-        worker = JobWorker(
-            repository=repository,
-            job_queue=job_queue,
-            file_fetcher=file_fetcher,
-            gemini_client=gemini_client,
-            webhook_dispatcher=webhook_dispatcher,
-            idle_sleep=settings.worker_idle_sleep,
-            admin_state=admin_state,
-        )
+        workers = [
+            JobWorker(
+                repository=repository,
+                job_queue=job_queue,
+                file_fetcher=file_fetcher,
+                gemini_client=gemini_client,
+                webhook_dispatcher=webhook_dispatcher,
+                idle_sleep=settings.worker_idle_sleep,
+                admin_state=admin_state,
+                name=f"JobWorker-{index + 1}",
+            )
+            for index in range(settings.worker_count)
+        ]
 
         pending_jobs = repository.list_pending_jobs()
         for job_id in pending_jobs:
@@ -305,7 +315,7 @@ def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
             "file_fetcher": file_fetcher,
             "gemini_client": gemini_client,
             "webhook_dispatcher": webhook_dispatcher,
-            "worker": worker,
+            "workers": workers,
         },
         len(pending_jobs),
     )
