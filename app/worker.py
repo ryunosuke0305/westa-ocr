@@ -84,16 +84,12 @@ class JobWorker(threading.Thread):
         try:
             file_bytes = self._file_fetcher.fetch(job_row["file_id"])
         except Exception as exc:
-            LOGGER.exception("Failed to fetch source file", extra={"jobId": job_id})
-            self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
-            self._repository.update_job_counters(job_id, total_pages=None, processed_pages=None, skipped_pages=None)
-            self._send_summary(
+            self._handle_initial_failure(
                 job_row,
-                total_pages=0,
-                processed_pages=0,
-                skipped_pages=0,
-                errors=[{"message": f"file fetch failed: {exc}"}],
-                status=JobStatus.ERROR,
+                job_id,
+                log_message="Failed to fetch source file",
+                error_prefix="file fetch failed",
+                exc=exc,
             )
             return
 
@@ -103,16 +99,12 @@ class JobWorker(threading.Thread):
                 raise NotImplementedError("Only splitMode=pdf is currently supported")
             pages = split_pdf(file_bytes)
         except Exception as exc:
-            LOGGER.exception("Failed to split PDF", extra={"jobId": job_id})
-            self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
-            self._repository.update_job_counters(job_id, total_pages=None, processed_pages=None, skipped_pages=None)
-            self._send_summary(
+            self._handle_initial_failure(
                 job_row,
-                total_pages=0,
-                processed_pages=0,
-                skipped_pages=0,
-                errors=[{"message": f"split failed: {exc}"}],
-                status=JobStatus.ERROR,
+                job_id,
+                log_message="Failed to split PDF",
+                error_prefix="split failed",
+                exc=exc,
             )
             return
 
@@ -317,6 +309,32 @@ class JobWorker(threading.Thread):
             response_text=response_text,
             error=error,
             token=token,
+        )
+
+    def _handle_initial_failure(
+        self,
+        job_row,
+        job_id: str,
+        *,
+        log_message: str,
+        error_prefix: str,
+        exc: Exception,
+    ) -> None:
+        LOGGER.exception(log_message, extra={"jobId": job_id})
+        self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
+        self._repository.update_job_counters(
+            job_id,
+            total_pages=None,
+            processed_pages=None,
+            skipped_pages=None,
+        )
+        self._send_summary(
+            job_row,
+            total_pages=0,
+            processed_pages=0,
+            skipped_pages=0,
+            errors=[{"message": f"{error_prefix}: {exc}"}],
+            status=JobStatus.ERROR,
         )
 
 
