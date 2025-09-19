@@ -389,7 +389,7 @@
           <div
             class="accordion-item"
             v-for="(log, index) in state.geminiLogs"
-            :key="`gemini-${index}`"
+            :key="`gemini-${log.id}`"
           >
             <h2 class="accordion-header" :id="`gemini-heading-${index}`">
               <button
@@ -403,6 +403,7 @@
                 <span class="badge me-3" :class="log.success ? 'text-bg-success' : 'text-bg-danger'">
                   [[ log.success ? '成功' : '失敗' ]]
                 </span>
+                <span class="badge text-bg-secondary me-3">[[ log.sourceLabel ]]</span>
                 <span class="me-3 fw-semibold">[[ log.model ]]</span>
                 <span class="me-3 text-muted">[[ log.mimeType ]]</span>
                 <span class="text-muted small">[[ log.timestamp ]]</span>
@@ -413,16 +414,20 @@
               class="accordion-collapse collapse"
               :aria-labelledby="`gemini-heading-${index}`"
               data-bs-parent="#geminiLogs"
-            >
-              <div class="accordion-body">
-                <dl class="row mb-0">
-                  <dt class="col-sm-3">プロンプト</dt>
-                  <dd class="col-sm-9">[[ log.promptPreview ]]</dd>
-                  <dt class="col-sm-3">テキスト</dt>
-                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.responseText || '(なし)' ]]</pre></dd>
-                  <dt class="col-sm-3">メタ情報</dt>
-                  <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ formatJson(log.meta) ]]</pre></dd>
-                  <dt class="col-sm-3">エラー</dt>
+              >
+                <div class="accordion-body">
+                  <dl class="row mb-0">
+                    <dt class="col-sm-3">ソース</dt>
+                    <dd class="col-sm-9">[[ log.source ]]</dd>
+                    <dt class="col-sm-3">プロンプト</dt>
+                    <dd class="col-sm-9">[[ log.promptPreview ]]</dd>
+                    <dt class="col-sm-3">リクエスト</dt>
+                    <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ formatJson(log.request) ]]</pre></dd>
+                    <dt class="col-sm-3">テキスト</dt>
+                    <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.responseText || '(なし)' ]]</pre></dd>
+                    <dt class="col-sm-3">メタ情報</dt>
+                    <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ formatJson(log.meta) ]]</pre></dd>
+                    <dt class="col-sm-3">エラー</dt>
                   <dd class="col-sm-9"><pre class="bg-light p-3 rounded">[[ log.error || '(なし)' ]]</pre></dd>
                 </dl>
               </div>

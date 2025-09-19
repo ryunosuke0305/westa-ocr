@@ -79,6 +79,20 @@ class JobRepository:
                 PRIMARY KEY (job_id, page_index),
                 FOREIGN KEY(job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS gemini_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL,
+                prompt_preview TEXT NOT NULL,
+                model TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                request_json TEXT,
+                success INTEGER NOT NULL,
+                response_text TEXT,
+                meta_json TEXT,
+                error TEXT
+            );
             """
         )
 
@@ -321,6 +335,86 @@ class JobRepository:
             "pages": self.list_pages(job_id),
         }
         return detail
+
+    # ------------------------------------------------------------------
+    # Gemini logging helpers
+    # ------------------------------------------------------------------
+    def record_gemini_log(
+        self,
+        *,
+        source: str,
+        prompt: str,
+        model: str,
+        mime_type: str,
+        request: Optional[Dict],
+        success: bool,
+        response_text: Optional[str],
+        meta: Optional[Dict],
+        error: Optional[str],
+    ) -> None:
+        payload = {
+            "source": source,
+            "prompt_preview": (prompt or "")[:200].replace("\n", " "),
+            "model": model,
+            "mime_type": mime_type,
+            "request_json": json.dumps(request, ensure_ascii=False) if request else None,
+            "success": 1 if success else 0,
+            "response_text": response_text,
+            "meta_json": json.dumps(meta, ensure_ascii=False) if meta else None,
+            "error": error,
+        }
+        with self._locked():
+            self._conn.execute(
+                """
+                INSERT INTO gemini_logs (
+                    source, prompt_preview, model, mime_type, request_json,
+                    success, response_text, meta_json, error
+                ) VALUES (
+                    :source, :prompt_preview, :model, :mime_type, :request_json,
+                    :success, :response_text, :meta_json, :error
+                )
+                """,
+                payload,
+            )
+
+    def list_gemini_logs(self, limit: int = 10) -> List[Dict]:
+        with self._locked():
+            rows = self._conn.execute(
+                """
+                SELECT id, created_at, source, prompt_preview, model, mime_type,
+                       request_json, success, response_text, meta_json, error
+                  FROM gemini_logs
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        logs: List[Dict] = []
+        for row in rows:
+            created_at = row["created_at"]
+            try:
+                timestamp = datetime.fromisoformat(created_at)
+            except ValueError:
+                timestamp = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+            request_payload = json.loads(row["request_json"]) if row["request_json"] else None
+            meta_payload = json.loads(row["meta_json"]) if row["meta_json"] else None
+            logs.append(
+                {
+                    "id": row["id"],
+                    "timestamp": timestamp,
+                    "source": row["source"],
+                    "prompt_preview": row["prompt_preview"],
+                    "model": row["model"],
+                    "mime_type": row["mime_type"],
+                    "request": request_payload,
+                    "success": bool(row["success"]),
+                    "response_text": row["response_text"],
+                    "meta": meta_payload,
+                    "error": row["error"],
+                }
+            )
+        return logs
 
 
 __all__ = ["JobRepository"]

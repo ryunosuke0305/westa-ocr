@@ -28,20 +28,6 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "tem
 
 
 @dataclass(slots=True)
-class GeminiLogEntry:
-    """Result of a manual Gemini invocation."""
-
-    timestamp: datetime
-    prompt_preview: str
-    model: str
-    mime_type: str
-    success: bool
-    response_text: Optional[str]
-    meta: Optional[Dict]
-    error: Optional[str]
-
-
-@dataclass(slots=True)
 class WebhookLogEntry:
     """Result of a manual webhook dispatch."""
 
@@ -112,16 +98,10 @@ class AdminState:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._gemini_logs: List[GeminiLogEntry] = []
         self._webhook_logs: List[WebhookLogEntry] = []
         self._relay_request_logs: List[RelayRequestLogEntry] = []
         self._relay_webhook_logs: List[RelayWebhookLogEntry] = []
         self._messages: List[AdminMessage] = []
-
-    @property
-    def gemini_logs(self) -> List[GeminiLogEntry]:
-        with self._lock:
-            return list(self._gemini_logs)
 
     @property
     def webhook_logs(self) -> List[WebhookLogEntry]:
@@ -142,11 +122,6 @@ class AdminState:
     def messages(self) -> List[AdminMessage]:
         with self._lock:
             return list(self._messages)
-
-    def add_gemini_log(self, entry: GeminiLogEntry) -> None:
-        with self._lock:
-            self._gemini_logs.insert(0, entry)
-            del self._gemini_logs[10:]
 
     def add_webhook_log(self, entry: WebhookLogEntry) -> None:
         entry = replace(entry, token=_mask_token(entry.token))
@@ -232,7 +207,9 @@ def _format_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str, Any]:
+def _build_dashboard_payload(
+    settings: Settings, state: AdminState, gemini_logs: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     config_fields = []
     for field in CONFIG_FIELDS:
         env_name = field["env"]
@@ -259,19 +236,24 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
         for message in state.messages
     ]
 
-    gemini_logs = [
-        {
-            "timestamp": _format_datetime(entry.timestamp),
-            "promptPreview": entry.prompt_preview,
-            "model": entry.model,
-            "mimeType": entry.mime_type,
-            "success": entry.success,
-            "responseText": entry.response_text,
-            "meta": entry.meta,
-            "error": entry.error,
-        }
-        for entry in state.gemini_logs
-    ]
+    gemini_log_payloads = []
+    for entry in gemini_logs:
+        gemini_log_payloads.append(
+            {
+                "id": entry["id"],
+                "timestamp": _format_datetime(entry["timestamp"]),
+                "source": entry["source"],
+                "sourceLabel": entry["source"].upper(),
+                "promptPreview": entry["prompt_preview"],
+                "model": entry["model"],
+                "mimeType": entry["mime_type"],
+                "success": entry["success"],
+                "responseText": entry["response_text"],
+                "meta": entry["meta"],
+                "error": entry["error"],
+                "request": entry["request"],
+            }
+        )
 
     webhook_logs = [
         {
@@ -320,7 +302,7 @@ def _build_dashboard_payload(settings: Settings, state: AdminState) -> Dict[str,
     return {
         "configFields": config_fields,
         "messages": messages,
-        "geminiLogs": gemini_logs,
+        "geminiLogs": gemini_log_payloads,
         "webhookLogs": webhook_logs,
         "relayRequestLogs": relay_request_logs,
         "relayWebhookLogs": relay_webhook_logs,
@@ -346,6 +328,51 @@ def _parse_optional_int(value: str) -> Optional[int]:
     if not value:
         return None
     return int(value)
+
+
+def _build_admin_gemini_request_snapshot(
+    *,
+    prompt: str,
+    input_mode: str,
+    mime_type: str,
+    page_content: str,
+    page_bytes: bytes,
+    masters: Dict[str, Any],
+    model: str,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    top_k: Optional[int],
+    max_output_tokens: Optional[int],
+) -> Dict[str, Any]:
+    preview_limit = 500
+    preview_text = page_content[:preview_limit]
+    input_snapshot: Dict[str, Any] = {
+        "mode": input_mode,
+        "mimeType": mime_type,
+        "sizeBytes": len(page_bytes),
+        "isPreviewTruncated": len(page_content) > preview_limit,
+    }
+    if input_mode == "text":
+        input_snapshot["textPreview"] = preview_text
+    elif input_mode == "base64":
+        base64_limit = 120
+        input_snapshot["base64Sample"] = page_content[:base64_limit]
+        input_snapshot["isBase64Truncated"] = len(page_content) > base64_limit
+    parameters = {
+        "model": model,
+        "temperature": temperature,
+        "topP": top_p,
+        "topK": top_k,
+        "maxOutputTokens": max_output_tokens,
+    }
+    return {
+        "prompt": prompt,
+        "promptLength": len(prompt),
+        "masters": masters,
+        "mastersKeys": sorted(masters.keys()),
+        "input": input_snapshot,
+        "parameters": parameters,
+    }
 
 
 def _reload_components(app: FastAPI, settings: Settings) -> None:
@@ -395,7 +422,9 @@ def register_admin_routes(app: FastAPI) -> None:
     @app.get("/admin")
     async def admin_dashboard(request: Request):
         settings: Settings = request.app.state.settings
-        payload = _build_dashboard_payload(settings, state)
+        repository = request.app.state.repository
+        gemini_logs = repository.list_gemini_logs(limit=10)
+        payload = _build_dashboard_payload(settings, state, gemini_logs)
         return templates.TemplateResponse("admin.html", {"request": request, "dashboard": payload})
 
     @app.post("/admin/gemini")
@@ -488,12 +517,29 @@ def register_admin_routes(app: FastAPI) -> None:
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
         gemini_client: GeminiClient = request.app.state.gemini_client
+        repository = request.app.state.repository
+        settings: Settings = request.app.state.settings
+        effective_model = model or settings.gemini_model
+        effective_mime_type = mime_type or "application/octet-stream"
+        request_snapshot = _build_admin_gemini_request_snapshot(
+            prompt=prompt,
+            input_mode=input_mode,
+            mime_type=effective_mime_type,
+            page_content=page_content,
+            page_bytes=page_bytes,
+            masters=masters_payload,
+            model=effective_model,
+            temperature=temperature_value,
+            top_p=top_p_value,
+            top_k=top_k_value,
+            max_output_tokens=max_tokens_value,
+        )
         try:
             result = gemini_client.generate(
-                model=model or None,
+                model=effective_model,
                 prompt=prompt,
                 page_bytes=page_bytes,
-                mime_type=mime_type or "application/octet-stream",
+                mime_type=effective_mime_type,
                 masters=masters_payload,
                 temperature=temperature_value,
                 top_p=top_p_value,
@@ -501,17 +547,16 @@ def register_admin_routes(app: FastAPI) -> None:
                 max_output_tokens=max_tokens_value,
             )
         except Exception as exc:
-            state.add_gemini_log(
-                GeminiLogEntry(
-                    timestamp=datetime.utcnow(),
-                    prompt_preview=prompt[:80],
-                    model=model or request.app.state.settings.gemini_model,
-                    mime_type=mime_type,
-                    success=False,
-                    response_text=None,
-                    meta=None,
-                    error=str(exc),
-                )
+            repository.record_gemini_log(
+                source="admin",
+                prompt=prompt,
+                model=effective_model,
+                mime_type=effective_mime_type,
+                request=request_snapshot,
+                success=False,
+                response_text=None,
+                meta=None,
+                error=str(exc),
             )
             state.add_message(
                 AdminMessage(
@@ -524,17 +569,16 @@ def register_admin_routes(app: FastAPI) -> None:
             )
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
-        state.add_gemini_log(
-            GeminiLogEntry(
-                timestamp=datetime.utcnow(),
-                prompt_preview=prompt[:80],
-                model=(model or request.app.state.settings.gemini_model),
-                mime_type=mime_type,
-                success=True,
-                response_text=result.text,
-                meta=result.meta,
-                error=None,
-            )
+        repository.record_gemini_log(
+            source="admin",
+            prompt=prompt,
+            model=effective_model,
+            mime_type=effective_mime_type,
+            request=request_snapshot,
+            success=True,
+            response_text=result.text,
+            meta=result.meta,
+            error=None,
         )
         state.add_message(
             AdminMessage(
@@ -542,7 +586,7 @@ def register_admin_routes(app: FastAPI) -> None:
                 category="gemini",
                 success=True,
                 summary="Gemini へのリクエストが完了しました",
-                detail=f"モデル: {(model or request.app.state.settings.gemini_model)}",
+                detail=f"モデル: {effective_model}",
             )
         )
         return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)

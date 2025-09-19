@@ -70,3 +70,38 @@ def test_repository_creates_database_file_if_missing(tmp_path: Path) -> None:
 
     assert db_path.exists()
     repository.close()
+
+
+def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
+    repository = _create_repository(tmp_path)
+    repository.record_gemini_log(
+        source="admin",
+        prompt="first prompt",
+        model="model-a",
+        mime_type="text/plain",
+        request={"prompt": "first prompt", "input": {"mode": "text"}},
+        success=True,
+        response_text="ok",
+        meta={"tokens": 10},
+        error=None,
+    )
+    repository.record_gemini_log(
+        source="worker",
+        prompt="second prompt",
+        model="model-b",
+        mime_type="application/pdf",
+        request={"prompt": "second prompt", "input": {"mode": "pdf_page"}},
+        success=False,
+        response_text=None,
+        meta=None,
+        error="boom",
+    )
+
+    logs = repository.list_gemini_logs()
+    assert len(logs) == 2
+    assert logs[0]["source"] == "worker"
+    assert logs[0]["success"] is False
+    assert logs[0]["request"]["prompt"] == "second prompt"
+    assert logs[1]["prompt_preview"].startswith("first prompt")
+
+    repository.close()
