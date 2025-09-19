@@ -75,7 +75,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         tmp_dir=tmp_dir,
         worker_idle_sleep=_read_float("WORKER_IDLE_SLEEP", 1.0),
-        worker_count=_read_int("WORKER_COUNT", 10, minimum=1),
+        worker_count=_read_int("WORKER_COUNT", 3, minimum=1),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         webhook_timeout=_read_float("WEBHOOK_TIMEOUT", 30.0),
