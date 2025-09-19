@@ -8,10 +8,10 @@
 ## 1. コンポーネント概要
 
 - **HTTP API（/jobs 他）**: GAS からジョブを登録。即 ACK を返す。
-- **ワーカー（同一プロセス内）**: ジョブキューをポーリングし、PDF 取得 → ページ分割 → Gemini 呼び出し → Webhook 送信。
+- **ワーカー（同一プロセス内）**: キューから 1 ジョブずつ取り出して順次処理。Google Drive から PDF を取得し、ページごとに Gemini を呼び出し、結果を Webhook へ転送する。
 - **永続ストレージ**: `/data` に SQLite / ジョブ状態 / 一時ファイル（必要に応じて）を保存。
 
-> 並列数（concurrency）、レート制御、リトライは環境変数で調整可能。
+> ※ 現状の実装は 1 ワーカーで順次処理。将来的な並列化やレート制御は環境変数で切り替えられるよう拡張予定。
 
 ---
 
@@ -29,6 +29,15 @@ Worker（同一コンテナ内）
    └─ 全ページ終了で Webhook POST（JOB_SUMMARY）
 GAS(doPost) で検証・保存・集計
 ```
+
+### 2.1 ジョブ処理ロジック（GAS リクエスト受付〜Webhook 返信）
+
+1. **GAS からのリクエスト受信**: `POST /jobs` に `orderId` や `fileId`、マスタ CSV、Webhook 設定が届く。Bearer トークンを検証し、SQLite へ永続化したうえでジョブ ID を払い出す。
+2. **Google Drive から PDF 取得**: バックグラウンドワーカーが `fileId` を取り出し、サービスアカウントのアクセストークンを用いて Drive API (`files.get?alt=media`) からバイナリをダウンロードする。HTTP/HTTPS や `file://` にも対応。
+3. **ページ単位へ分割**: 取得した PDF を `split_pdf` でページごとに切り出す。ページ番号は **1 から** の連番で管理する。
+4. **Gemini へ問い合わせ**: 各ページを `GeminiClient.generate` で送信。プロンプトにマスタ CSV（`shipCsv` / `itemCsv`）を追記し、Gemini から得たテキストとメタ情報を保存する。API キーが未設定の場合はシミュレーションレスポンスを返す。
+5. **Webhook へ転送**: `WebhookDispatcher.send` がページごとの結果 (`event=PAGE_RESULT`) を GAS の Webhook（Apps Script doPost）へ POST。Bearer トークンをヘッダに付与し、HTTP 302 にも追従する。
+6. **完了通知**: 全ページ処理後に `event=JOB_SUMMARY` を送信。処理済み枚数・スキップ数・ページ単位のエラー情報、および最終的なジョブステータス（`DONE` / `ERROR`）をまとめて通知する。
 
 ---
 
@@ -53,18 +62,19 @@ GAS(doPost) で検証・保存・集計
   },
   "webhook": {
     "url": "https://script.google.com/... (必須)",
-    "token": "string (必須)"                 // Relay→GAS の Bearer トークン
+    "token": "string (必須)"                 // Relay→GAS の Bearer トークン（空文字不可）
   },
   "gemini": {
     "model": "string (既定: gemini-2.5-flash)",
     "temperature": 0.1,
     "topP": 0.9,
+    "topK": 32,
     "maxOutputTokens": 65536
   },
   "options": {
-    "splitMode": "pdf|image",              // 既定: pdf（ページPDFのまま送る）
+    "splitMode": "pdf|image",              // 既定: pdf。現状 image は未対応
     "dpi": 300,                            // splitMode=image のとき有効
-    "concurrency": 3                       // ページ並列数（環境変数で上限）
+    "concurrency": 3                       // 予約フィールド（現状は未使用）
   },
   "idempotencyKey": "string (任意)"        // 無指定時は server が orderId を採用
 }
@@ -105,7 +115,7 @@ GAS(doPost) で検証・保存・集計
     "tokensInput": 0,
     "tokensOutput": 0
   },
-  "idempotencyKey": "abc123:3"             // orderId:pageIndex 形式を推奨
+  "idempotencyKey": "abc123:3"             // orderId:pageIndex 形式を推奨（pageIndex は 1 始まり）
 }
 ```
 
@@ -118,244 +128,208 @@ GAS(doPost) で検証・保存・集計
   "totalPages": 7,
   "processedPages": 6,                      // isNonOrderPage を除く
   "skippedPages": 1,
-  "errors": []                              // ページ単位の失敗やタイムアウトがあれば配列で返す
+  "errors": [],                             // ページ単位の失敗やタイムアウトがあれば配列で返す
+  "status": "DONE"                         // 任意。ジョブの最終ステータス（DONE / ERROR）
 }
 ```
 
-> **ページ番号規約**: `pageIndex` は **0-based** を推奨（内部配列と一致）。UI表示が1-basedなら GAS 側で +1。
+> **ページ番号規約**: `pageIndex` は **1-based**。UI 表示と内部記録を一致させたい場合はこの値をそのまま利用する。
 
 ---
 
-## 5. 内部モデル（永続化; `/data` 配下）
+## 5. 永続化モデル（SQLite）
 
-### 5.1 SQLite ファイル
-- パス: `/data/relay.db`（バインドマウント先に作成）
+### 5.1 `jobs` テーブル
+| column            | type    | note                                                            |
+|-------------------|---------|-----------------------------------------------------------------|
+| job_id            | TEXT PK | `job_{UTCタイムスタンプ}_{ランダム英数字}`                       |
+| order_id          | TEXT    | GAS 側の注文書 ID                                                |
+| file_id           | TEXT    | Drive ファイル ID / URL / `file://` など                         |
+| prompt            | TEXT    | Gemini へ渡すプロンプト                                          |
+| pattern           | TEXT    | フィルタ条件。未指定可                                           |
+| masters_json      | TEXT    | `shipCsv` / `itemCsv` を格納した JSON                            |
+| webhook_url       | TEXT    | GAS Webhook URL                                                 |
+| webhook_token     | TEXT    | GAS Webhook 用 Bearer トークン                                   |
+| gemini_json       | TEXT    | Gemini 設定（任意）                                              |
+| options_json      | TEXT    | `splitMode` など追加オプション（任意）                           |
+| idempotency_key   | TEXT    | `orderId` など。UNIQUE 制約                                      |
+| status            | TEXT    | `RECEIVED` / `ENQUEUED` / `PROCESSING` / `DONE` / `ERROR`         |
+| last_error        | TEXT    | 最終エラー概要（任意）                                           |
+| total_pages       | INTEGER | 総ページ数（処理後に更新）                                       |
+| processed_pages   | INTEGER | Webhook 送信まで成功したページ数                                 |
+| skipped_pages     | INTEGER | エラー等でスキップしたページ数                                   |
+| created_at        | TEXT    | ISO8601（`datetime('now')`）                                      |
+| updated_at        | TEXT    | ISO8601（`datetime('now')`）                                      |
 
-#### テーブル: `jobs`
-| column        | type      | note                                               |
-|---------------|-----------|----------------------------------------------------|
-| job_id        | TEXT PK   | `job_yyyy-mm-dd_nnnnn`                             |
-| order_id      | TEXT      | GAS の注文書ID                                     |
-| file_id       | TEXT      | Drive fileId                                       |
-| status        | TEXT      | RECEIVED / PROCESSING / DONE / ERROR               |
-| total_pages   | INTEGER   | 検出総ページ数                                     |
-| created_at    | INTEGER   | unix seconds                                       |
-| updated_at    | INTEGER   | unix seconds                                       |
+### 5.2 `job_pages` テーブル
+| column            | type    | note                                                   |
+|-------------------|---------|--------------------------------------------------------|
+| job_id            | TEXT    | FK → `jobs.job_id`                                     |
+| page_index        | INTEGER | 1 から始まるページ番号                                 |
+| status            | TEXT    | `DONE` / `ERROR`                                        |
+| is_non_order_page | INTEGER | 現状は常に 0（非注文書ページ検出は未実装）             |
+| raw_text          | TEXT    | Gemini からの生テキスト                                |
+| error             | TEXT    | 失敗時のメッセージ                                     |
+| meta_json         | TEXT    | Gemini メタデータ（JSON 文字列）                       |
+| created_at        | TEXT    | ISO8601                                                 |
+| updated_at        | TEXT    | ISO8601                                                 |
 
-#### テーブル: `pages`
-| column        | type      | note                                               |
-|---------------|-----------|----------------------------------------------------|
-| job_id        | TEXT      | FK -> jobs.job_id                                  |
-| page_index    | INTEGER   | 0-based                                            |
-| status        | TEXT      | QUEUED / RUNNING / DONE / ERROR                    |
-| retries       | INTEGER   | 既定 0                                             |
-| raw_text      | TEXT      | Geminiの結果（text/plain）                         |
-| is_non_order  | INTEGER   | 0/1                                                |
-| error         | TEXT      | 失敗時の短縮メッセージ                             |
-| updated_at    | INTEGER   | unix seconds                                       |
-| PRIMARY KEY(job_id, page_index) |           | 冪等性確保                           |
-
-#### テーブル: `events`（オプション）
-- Webhook送信ログ（重複対策＆監査）
-
-### 5.2 一時ファイル
-- `/data/tmp/<job_id>/` にページPDF/PNGを一時保存（必要時のみ）。  
-- ジョブ完了後に削除（`RETENTION_SECS` を超えたらクリーンアップ）。
-
----
-
-## 6. 外部連携
-
-### 6.1 Google Drive 取得
-- サービスアカウントで Drive API `files.get` を使用。  
-- PDF バイト列を取得し、ページ分解。権限は**対象フォルダ共有**で最小化。
-
-### 6.2 Gemini API 呼び出し（ページ単位）
-- URL 例: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=...`
-- `parts`:
-  - `inline_data`: `application/pdf`（1ページPDF）または `image/png`（画像化した1枚）
-  - `text`: `prompt + "\n\n" + shipCsv + "\n\n" + itemCsv`
-- 429/5xx は指数バックオフ。`maxRetries`・`initialBackoffMs` 環境変数で調整。
+`JobRepository` がすべての読み書きを担い、マルチスレッドでも安全なように `RLock` で直列化している。起動時には `RECEIVED` / `ENQUEUED` / `PROCESSING` のジョブを再キューイングし、処理を継続可能な状態に戻す。
 
 ---
 
-## 7. セキュリティ
+## 6. 主要モジュールと外部サービス
 
-- **入力認証（GAS→Relay）**: Bearer Token のみ。
-- **冪等性**: `idempotencyKey`（`orderId:pageIndex`）で重複処理を抑止。
-- **秘密情報**: `GEMINI_API_KEY` は**コンテナ環境変数**で注入し、ログに出さない。
-
----
-
-## 8. 環境変数（コンテナ）
-
-| env                          | default             | 説明 |
-|-----------------------------|---------------------|------|
-| PORT                        | 5000                | HTTP待受 |
-| RELAY_TOKEN                 | (必須)              | GAS→Relay の Bearer |
-| WEBHOOK_USER_AGENT          | relay/1.0           | 監査用 UA |
-| GEMINI_API_KEY              | (必須)              | Gemini 認証 |
-| GEMINI_MODEL                | gemini-2.5-flash    | 既定モデル |
-| MAX_CONCURRENCY             | 3                   | ページ並列上限 |
-| RATE_LIMIT_RPS              | 5                   | 1秒あたり送信上限 |
-| BACKOFF_MAX_RETRIES         | 5                   | リトライ回数 |
-| BACKOFF_INITIAL_MS          | 1000                | 初期待機(ms) |
-| SQLITE_PATH                 | /data/relay.db      | 永続 DB |
-| TMP_DIR                     | /data/tmp           | 一時ファイル |
-| RETENTION_SECS              | 600                 | 一時ファイル保持 |
-| DRIVE_SERVICE_ACCOUNT_JSON  | /data/sa.json       | サービスアカウント鍵（マウント） |
-
-> `DRIVE_SERVICE_ACCOUNT_JSON` は `/data` に配置（読み取り権限のみ）。
+- **FileFetcher**: `http(s)://`、`file://`、`local:`、および Google Drive のファイル ID に対応。Drive 利用時はサービスアカウント認証（`DRIVE_SERVICE_ACCOUNT_JSON`）を読み込み、必要に応じてトークンをリフレッシュする。
+- **GeminiClient**: `models/{model}:generateContent` を呼び出し、ページ PDF・プロンプト・マスタ CSV を 1 リクエストにまとめる。API キー未設定時はシミュレーションレスポンスを返すので、ローカル検証が容易。
+- **WebhookDispatcher**: Apps Script など 302 を返すエンドポイントにも対応できるよう `follow_redirects=True` で POST。Bearer トークンを自動付与し、失敗時は例外で呼び出し元に通知する。
+- **JobWorker**: 1 スレッドで順次処理し、ページ結果を都度 SQLite と Webhook に記録。途中失敗時は `_handle_initial_failure` でサマリを送信し、ジョブを `ERROR` として終了させる。
 
 ---
 
-## 9. API 仕様（詳細）
+## 7. 環境変数
 
-### 9.1 `POST /jobs`
-- バリデーション: 必須項目（`orderId`, `fileId`, `masters.shipCsv`, `masters.itemCsv`, `webhook.url`, 認証）。
-- 正常系: 200 + `job_id` を返して、**非同期で処理開始**。
-- 代表的 4xx:
-  - 400: 必須フィールド欠落 / 正規表現違反
-  - 401/403: 認証失敗
-- 代表的 5xx:
-  - 502: Drive/Gemini 一時障害（内部リトライ後でも失敗）
+`app.settings.get_settings()` が読み込む主な変数は以下の通り。
 
-### 9.2 `GET /jobs/{job_id}`（任意）
-- レスポンス例
+| env                        | default            | 備考 |
+|---------------------------|--------------------|------|
+| RELAY_TOKEN               | (必須)             | GAS→Relay 認証用 Bearer トークン |
+| DATA_DIR                  | `/data`            | SQLite などのベースディレクトリ |
+| SQLITE_PATH               | `/data/relay.db`   | SQLite ファイルパス |
+| TMP_DIR                   | `/data/tmp`        | 予約（現状未使用） |
+| WORKER_IDLE_SLEEP         | `1.0`              | ワーカーがキュー待機するときの sleep 秒数 |
+| GEMINI_API_KEY            | なし               | 未設定だとシミュレーション動作 |
+| GEMINI_MODEL              | `gemini-2.5-flash` | 既定モデル名 |
+| WEBHOOK_TIMEOUT           | `30.0`             | Webhook POST タイムアウト（秒） |
+| REQUEST_TIMEOUT           | `60.0`             | Drive / Gemini への HTTP タイムアウト（秒） |
+| LOG_LEVEL                 | `INFO`             | Python ロガーのレベル |
+| DRIVE_SERVICE_ACCOUNT_JSON| なし               | Drive 認証情報のパス。設定時は `FileFetcher` が利用 |
+
+---
+
+## 8. API エンドポイント詳細
+
+### 8.1 `POST /jobs`
+- Bearer 認証必須。
+- `JobRequest` のバリデーションに失敗すると 400。`webhook.token` が空文字の場合も 400。
+- 成功時は `JobResponse` を返し、`status` は常に `RECEIVED`。
+- `idempotencyKey` が重複していた場合は既存ジョブをそのまま返す。
+
+### 8.2 `GET /jobs/{job_id}`
+- Bearer 認証必須。
+- `JobDetail` を返却。例:
 ```json
 {
-  "job_id": "job_2025-09-18_00001",
-  "order_id": "abc123",
+  "jobId": "job_20250201T120000_abcd12",
+  "orderId": "abc123",
   "status": "PROCESSING",
-  "total_pages": 7,
-  "done": 4,
-  "error": 0
+  "fileId": "1AbCdEf...",
+  "prompt": "...",
+  "pattern": null,
+  "masters": {"shipCsv": "...", "itemCsv": "..."},
+  "webhookUrl": "https://script.google.com/...",
+  "webhookToken": "******",
+  "createdAt": "2025-02-01T12:00:00",
+  "updatedAt": "2025-02-01T12:00:05",
+  "totalPages": 7,
+  "processedPages": 6,
+  "skippedPages": 1,
+  "lastError": null,
+  "pages": [
+    {"pageIndex": 1, "status": "DONE", "isNonOrderPage": false, "rawText": "...", "error": null, "meta": {"model": "gemini-2.5-flash"}}
+  ]
 }
 ```
 
-### 9.3 `POST /healthz`
-- 200 OK（DB疎通・キュー深さを返すと尚良）
+### 8.3 `GET /healthz`
+- 無認証。単に `{ "status": "ok" }` を返す。
 
 ---
 
-## 10. 処理アルゴリズム（擬似コード）
+## 9. ワーカー処理の擬似コード
 
 ```
-on POST /jobs (req):
-  assert auth ok
-  validate body
-  job_id = newJobId()
-  upsert jobs(status=RECEIVED)
+on POST /jobs:
+  authenticate()
+  validate(payload)
+  job_id = generate_id()
+  insert_job(status=RECEIVED)
+  mark_enqueued(job_id)
   enqueue(job_id)
-  return {200, job_id, correlation_id=orderId}
+  return JobResponse(job_id, correlation_id=orderId, status=RECEIVED)
 
-workerLoop():
-  while true:
-    job = dequeue()
-    if not job: sleep(500ms); continue
+worker_loop():
+  while running:
+    job_id = queue.get(timeout=idle_sleep)
+    row = repository.get_job(job_id)
+    if row is None or row.status not in {RECEIVED, ENQUEUED, PROCESSING}:
+      continue
+    repository.update_job_status(PROCESSING)
     try:
-      set job.status=PROCESSING
-      bytes = driveFetch(fileId)
-      pages = splitPdf(bytes or images)
-      total = len(pages)
-      for i, page in enumerate(pages):
-        with rate_limit & semaphore:
-          try:
-            resp = callGemini(page, prompt, masters)
-            upsert pages(status=DONE, raw_text=resp, is_non_order=detectNonOrder(resp))
-            postWebhook(PAGE_RESULT, i, resp)
-          except e:
-            upsert pages(status=ERROR, error=short(e))
-            retry with backoff (<= BACKOFF_MAX_RETRIES)
-      summarize = calcSummary()
-      postWebhook(JOB_SUMMARY, summarize)
-      set job.status=DONE
-    except e:
-      set job.status=ERROR
-      postWebhook(JOB_SUMMARY, errors=[short(e)])
+      file_bytes = file_fetcher.fetch(file_id)
+      pages = split_pdf(file_bytes)
+    except Exception as exc:
+      handle_initial_failure(job_row, exc)
+      continue
+    for page in pages:
+      try:
+        result = gemini.generate(...)
+        repository.record_page_result(status="DONE", raw_text=result.text)
+        webhook_dispatcher.send(PAGE_RESULT)
+      except Exception as exc:
+        repository.record_page_result(status="ERROR", error=str(exc))
+        collect_error(exc)
+    repository.update_job_counters(...)
+    send_summary_and_finalize()
 ```
 
 ---
 
-## 11. ロギングと監視
+## 10. 運用メモ
 
-- すべてのログに `jobId`, `orderId`, `pageIndex` を含める。
-- 重要イベント（受信、Drive取得、ページ化、Gemini送信、Webhook送信、リトライ、完了）。
-- メトリクス（任意）: 1ページ処理時間、429件数、平均リトライ回数。
-
----
-
-## 12. Docker 実行例
-
-**ホスト側**に以下を用意:
-- `/opt/relay/data` … 永続ディレクトリ（空で可）
-- `/opt/relay/sa.json` … Service Account キー（Drive用）
-
-```bash
-docker run -d --name relay \
-  -p 5000:5000 \
-  -e RELAY_TOKEN="REPLACE_ME" \
-  -e GEMINI_API_KEY="REPLACE_ME" \
-  -e GEMINI_MODEL="gemini-2.5-flash" \
-  -e SQLITE_PATH="/data/relay.db" \
-  -e TMP_DIR="/data/tmp" \
-  -e DRIVE_SERVICE_ACCOUNT_JSON="/data/sa.json" \
-  -v /opt/relay/data:/data \
-  -v /opt/relay/sa.json:/data/sa.json:ro \
-  relay-image:latest
-```
-
-> **注意**: 永続化は **必ず `/data` にバインド**。ログを stdout/stderr に出し、ホスト側で収集。
+- Docker 実行例:
+  ```bash
+  docker run -d --name relay \
+    -p 5000:5000 \
+    -e RELAY_TOKEN="REPLACE_ME" \
+    -e GEMINI_API_KEY="REPLACE_ME" \
+    -e DRIVE_SERVICE_ACCOUNT_JSON="/data/sa.json" \
+    -v /opt/relay/data:/data \
+    -v /opt/relay/sa.json:/data/sa.json:ro \
+    relay-image:latest
+  ```
+  SQLite を含む `/data` を必ず永続化すること。
+- 確認ポイント:
+  - `POST /jobs` が 200 を返し、レスポンスの `job_id` を取得できること。
+  - Drive 上のファイル権限が適切で、ワーカーが PDF を取得できること。
+  - GAS Webhook で `PAGE_RESULT` / `JOB_SUMMARY` が到達すること。
+  - ジョブの途中で例外が発生した場合でも、`JOB_SUMMARY` が `status=ERROR` で送信されること。
 
 ---
 
-## 13. テスト・検証チェックリスト
+## 11. GAS との連携メモ
 
-- [ ] `POST /jobs` で 200 / job_id を受領できる
-- [ ] Drive から `fileId` を取得できる（権限OK）
-- [ ] ページ分割が正しい（ページ数一致）
-- [ ] `PAGE_RESULT` が GAS に届き、`parseMultiPageDataFromLLM` で解析可能
-- [ ] `JOB_SUMMARY` で「注文一覧」のページ数・ステータスが更新される
-- [ ] 429/5xx リトライが機能
-- [ ] `/data` に DB/一時ファイルが生成・削除される
-
----
-
-## 14. GAS 側インターフェース（参考: 送信と受信）
-
-### 送信（GAS → Relay）
-```js
-const body = {
-  orderId,
-  fileId,                   // Drive URL から抽出
-  prompt: replacedPrompt,   // {current_date} 埋め込み後
-  pattern: PATTERN,
-  masters: { shipCsv, itemCsv },
-  webhook: { url: GAS_WEBAPP_URL },
-  gemini: { model: "gemini-2.5-flash", temperature: 0.1, topP: 0.9, maxOutputTokens: 65536 },
-  options: { splitMode: "pdf", concurrency: 3 }
-};
-UrlFetchApp.fetch(RELAY_URL, {
-  method: "post",
-  contentType: "application/json",
-  headers: { Authorization: `Bearer ${RELAY_TOKEN}` },
-  payload: JSON.stringify(body)
-});
-```
-
-### 受信（Relay → GAS Webhook）
-- `event=PAGE_RESULT` を受け取ったら `parseMultiPageDataFromLLM(rawText)` を呼び、
-  「明細一覧」に append。`orderId:pageIndex` をキーに冪等チェック。  
-- `event=JOB_SUMMARY` で「注文一覧」のページ数・ステータス更新。
+- 送信例（Bearer トークン必須）
+  ```js
+  const body = {
+    orderId,
+    fileId,
+    prompt: replacedPrompt,
+    pattern: PATTERN,
+    masters: { shipCsv, itemCsv },
+    webhook: { url: WEBHOOK_URL, token: WEBHOOK_TOKEN },
+    gemini: { model: "gemini-2.5-flash", temperature: 0.1, topP: 0.9 },
+    options: { splitMode: "pdf" }
+  };
+  UrlFetchApp.fetch(RELAY_URL, {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: `Bearer ${RELAY_TOKEN}` },
+    payload: JSON.stringify(body)
+  });
+  ```
+- 受信側（GAS Webhook）は `event` に応じて処理を分岐し、`idempotencyKey` で重複排除できる。
 
 ---
 
-## 15. 非機能要件
-
-- **可用性**: 単一コンテナだが、**プロセス内ワーカー**はクラッシュ耐性あり（未送信Webhookは再試行）。
-- **性能**: 1 ジョブあたり並列 3 ページ想定、平均 5–15 秒/ページ（モデル・ページ密度依存）。
-- **保守性**: 設定は環境変数化、コードは API 層とワーカー層を分離。
-
----
-
-以上。単一コンテナ・/data 永続の要件で実運用に必要な仕様を網羅しています。
+以上が現状の実装と README の整合内容。
