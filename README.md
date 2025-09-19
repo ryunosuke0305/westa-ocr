@@ -37,7 +37,7 @@ GAS(doPost) で検証・保存・集計
 3. **ページ単位へ分割**: 取得した PDF を `split_pdf` でページごとに切り出す。ページ番号は **1 から** の連番で管理する。
 4. **Gemini へ問い合わせ**: 各ページを `GeminiClient.generate` で送信。プロンプトにマスタ CSV（`shipCsv` / `itemCsv`）を追記し、Gemini から得たテキストとメタ情報を保存する。API キーが未設定の場合はシミュレーションレスポンスを返す。
 5. **Webhook へ転送**: `WebhookDispatcher.send` がページごとの結果 (`event=PAGE_RESULT`) を GAS の Webhook（Apps Script doPost）へ POST。Bearer トークンをヘッダに付与し、HTTP 302 にも追従する。
-6. **完了通知**: 全ページ処理後に `event=JOB_SUMMARY` を送信。処理済み枚数・スキップ数・ページ単位のエラー情報、および最終的なジョブステータス（`DONE` / `ERROR`）をまとめて通知する。
+6. **完了通知**: 全ページ処理後に `event=JOB_SUMMARY` を送信。処理済み枚数・スキップ数・ページ単位のエラー情報、および最終的なジョブステータス（`DONE` / `ERROR` / `CANCELLED`）をまとめて通知する。
 
 ---
 
@@ -133,7 +133,7 @@ GAS(doPost) で検証・保存・集計
   "processedPages": 6,                      // isNonOrderPage を除く
   "skippedPages": 1,
   "errors": [],                             // ページ単位の失敗やタイムアウトがあれば配列で返す
-  "status": "DONE",                        // 任意。ジョブの最終ステータス（DONE / ERROR）
+  "status": "DONE",                        // 任意。ジョブの最終ステータス（DONE / ERROR / CANCELLED）
   "token": "<WEBHOOK_TOKEN>"               // Apps Script での検証用（ヘッダーと同値）
 }
 ```
@@ -158,7 +158,7 @@ GAS(doPost) で検証・保存・集計
 | gemini_json       | TEXT    | Gemini 設定（任意）                                              |
 | options_json      | TEXT    | `splitMode` など追加オプション（任意）                           |
 | idempotency_key   | TEXT    | `orderId` など。UNIQUE 制約                                      |
-| status            | TEXT    | `RECEIVED` / `ENQUEUED` / `PROCESSING` / `DONE` / `ERROR`         |
+| status            | TEXT    | `RECEIVED` / `ENQUEUED` / `PROCESSING` / `DONE` / `ERROR` / `CANCELLED` |
 | last_error        | TEXT    | 最終エラー概要（任意）                                           |
 | total_pages       | INTEGER | 総ページ数（処理後に更新）                                       |
 | processed_pages   | INTEGER | Webhook 送信まで成功したページ数                                 |
@@ -203,11 +203,11 @@ GAS(doPost) で検証・保存・集計
 | SQLITE_PATH               | `/data/relay.db`   | SQLite ファイルパス |
 | TMP_DIR                   | `/data/tmp`        | 予約（現状未使用） |
 | WORKER_IDLE_SLEEP         | `1.0`              | ワーカーがキュー待機するときの sleep 秒数 |
-| WORKER_COUNT              | `1`                | 並列実行するジョブワーカーのスレッド数 |
+| WORKER_COUNT              | `10`               | 並列実行するジョブワーカーのスレッド数 |
 | GEMINI_API_KEY            | なし               | 未設定だとシミュレーション動作 |
 | GEMINI_MODEL              | `gemini-2.5-flash` | 既定モデル名 |
 | WEBHOOK_TIMEOUT           | `30.0`             | Webhook POST タイムアウト（秒） |
-| REQUEST_TIMEOUT           | `60.0`             | Drive / Gemini への HTTP タイムアウト（秒） |
+| REQUEST_TIMEOUT           | `600.0`            | Drive / Gemini への HTTP タイムアウト（秒） |
 | LOG_LEVEL                 | `INFO`             | Python ロガーのレベル |
 | DRIVE_SERVICE_ACCOUNT_JSON| なし               | Drive 認証情報のパス。設定時は `FileFetcher` が利用 |
 
