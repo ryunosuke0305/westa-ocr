@@ -7,13 +7,14 @@ import json
 import os
 import threading
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import FastAPI, Form, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from zoneinfo import ZoneInfo
 
 from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
@@ -26,6 +27,8 @@ from .worker import JobWorker
 LOGGER = get_logger(__name__)
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+_JST = ZoneInfo("Asia/Tokyo")
 
 
 @dataclass(slots=True)
@@ -142,7 +145,7 @@ class AdminState:
         message: Optional[str],
     ) -> None:
         entry = RelayRequestLogEntry(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             job_id=job_id,
             order_id=order_id,
             idempotency_key=idempotency_key,
@@ -169,7 +172,7 @@ class AdminState:
         token: Optional[str],
     ) -> None:
         entry = RelayWebhookLogEntry(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             job_id=job_id,
             order_id=order_id,
             event=event,
@@ -219,7 +222,15 @@ CONFIG_FIELDS: List[Dict[str, str]] = [
 
 
 def _format_datetime(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_JST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _calculate_total_pages(total_count: int, page_size: int) -> int:
+    if total_count <= 0:
+        return 0
+    return (total_count + page_size - 1) // page_size
 
 
 def _build_dashboard_payload(
@@ -227,6 +238,11 @@ def _build_dashboard_payload(
     state: AdminState,
     gemini_logs: List[Dict[str, Any]],
     jobs: List[Dict[str, Any]],
+    *,
+    job_total_count: int,
+    job_page: int,
+    job_page_size: int,
+    job_total_pages: int,
 ) -> Dict[str, Any]:
     config_fields = []
     for field in CONFIG_FIELDS:
@@ -354,6 +370,14 @@ def _build_dashboard_payload(
         "relayRequestLogs": relay_request_logs,
         "relayWebhookLogs": relay_webhook_logs,
         "jobs": job_rows,
+        "jobsPagination": {
+            "page": job_page,
+            "pageSize": job_page_size,
+            "totalCount": job_total_count,
+            "totalPages": job_total_pages,
+            "hasPrev": job_total_pages > 0 and job_page > 1,
+            "hasNext": job_total_pages > 0 and job_page < job_total_pages,
+        },
         "defaults": {
             "mimeType": "text/plain",
             "masters": "{}",
@@ -376,6 +400,18 @@ def _parse_optional_int(value: str) -> Optional[int]:
     if not value:
         return None
     return int(value)
+
+
+def _parse_page_number(value: Optional[str], *, default: int = 1) -> int:
+    if value is None:
+        return default
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        return default
+    if page < 1:
+        return default
+    return page
 
 
 def _build_admin_gemini_request_snapshot(
@@ -479,8 +515,26 @@ def register_admin_routes(app: FastAPI) -> None:
         settings: Settings = request.app.state.settings
         repository = request.app.state.repository
         gemini_logs = repository.list_gemini_logs(limit=10)
-        jobs = repository.list_recent_jobs(limit=20)
-        payload = _build_dashboard_payload(settings, state, gemini_logs, jobs)
+        job_page_size = 20
+        requested_page = _parse_page_number(request.query_params.get("job_page"))
+        total_jobs = repository.count_jobs()
+        total_pages = _calculate_total_pages(total_jobs, job_page_size)
+        if total_pages == 0:
+            job_page = 1
+        else:
+            job_page = min(requested_page, total_pages)
+        offset = (job_page - 1) * job_page_size if total_jobs else 0
+        jobs = repository.list_recent_jobs(limit=job_page_size, offset=offset)
+        payload = _build_dashboard_payload(
+            settings,
+            state,
+            gemini_logs,
+            jobs,
+            job_total_count=total_jobs,
+            job_page=job_page,
+            job_page_size=job_page_size,
+            job_total_pages=total_pages,
+        )
         return templates.TemplateResponse("admin.html", {"request": request, "dashboard": payload})
 
     @app.post("/admin/gemini")
@@ -502,7 +556,7 @@ def register_admin_routes(app: FastAPI) -> None:
         if not prompt:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="プロンプトを入力してください",
@@ -513,7 +567,7 @@ def register_admin_routes(app: FastAPI) -> None:
         if not page_content:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="入力データを指定してください",
@@ -529,7 +583,7 @@ def register_admin_routes(app: FastAPI) -> None:
         except Exception as exc:  # pragma: no cover - defensive
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="マスター情報の読み込みに失敗しました",
@@ -546,7 +600,7 @@ def register_admin_routes(app: FastAPI) -> None:
         except ValueError as exc:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="数値パラメータの変換に失敗しました",
@@ -563,7 +617,7 @@ def register_admin_routes(app: FastAPI) -> None:
         except Exception as exc:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="入力データの変換に失敗しました",
@@ -616,7 +670,7 @@ def register_admin_routes(app: FastAPI) -> None:
             )
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
                     summary="Gemini へのリクエストでエラーが発生しました",
@@ -638,7 +692,7 @@ def register_admin_routes(app: FastAPI) -> None:
         )
         state.add_message(
             AdminMessage(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 category="gemini",
                 success=True,
                 summary="Gemini へのリクエストが完了しました",
@@ -654,7 +708,7 @@ def register_admin_routes(app: FastAPI) -> None:
         if job is None:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="jobs",
                     success=False,
                     summary="ジョブが見つかりません",
@@ -677,7 +731,7 @@ def register_admin_routes(app: FastAPI) -> None:
         if status_value not in cancellable:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="jobs",
                     success=False,
                     summary="この状態では中断できません",
@@ -695,7 +749,7 @@ def register_admin_routes(app: FastAPI) -> None:
         detail = "処理中のジョブの場合、完全に停止するまで時間がかかることがあります。"
         state.add_message(
             AdminMessage(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 category="jobs",
                 success=True,
                 summary=f"ジョブ {job_id} の中断要求を受け付けました",
@@ -718,7 +772,7 @@ def register_admin_routes(app: FastAPI) -> None:
         except Exception as exc:
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="webhook",
                     success=False,
                     summary="JSON ペイロードの解析に失敗しました",
@@ -741,7 +795,7 @@ def register_admin_routes(app: FastAPI) -> None:
                 response_text = exc.response.text
             state.add_webhook_log(
                 WebhookLogEntry(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     url=url,
                     payload=payload,
                     success=False,
@@ -753,7 +807,7 @@ def register_admin_routes(app: FastAPI) -> None:
             )
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="webhook",
                     success=False,
                     summary="Webhook の送信でエラーが発生しました",
@@ -764,7 +818,7 @@ def register_admin_routes(app: FastAPI) -> None:
 
         state.add_webhook_log(
             WebhookLogEntry(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 url=url,
                 payload=json.dumps(payload_dict, ensure_ascii=False, separators=(",", ":")),
                 success=True,
@@ -776,7 +830,7 @@ def register_admin_routes(app: FastAPI) -> None:
         )
         state.add_message(
             AdminMessage(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 category="webhook",
                 success=True,
                 summary="Webhook を送信しました",
@@ -797,7 +851,7 @@ def register_admin_routes(app: FastAPI) -> None:
         if not (updates.get("RELAY_TOKEN") and updates["RELAY_TOKEN"].strip()):
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="settings",
                     success=False,
                     summary="Relay Token は必須です",
@@ -836,7 +890,7 @@ def register_admin_routes(app: FastAPI) -> None:
             request.app.state.settings = restored_settings
             state.add_message(
                 AdminMessage(
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     category="settings",
                     success=False,
                     summary="環境変数の更新に失敗しました",
@@ -850,7 +904,7 @@ def register_admin_routes(app: FastAPI) -> None:
         _reload_components(request.app, new_settings)
         state.add_message(
             AdminMessage(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 category="settings",
                 success=True,
                 summary="環境変数を更新しました",

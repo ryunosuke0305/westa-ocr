@@ -32,20 +32,37 @@
     </header>
 
     <section v-if="state.messages.length" class="mb-4">
-      <div
-        v-for="(message, index) in state.messages"
-        :key="`message-${index}`"
-        class="alert"
-        :class="message.success ? 'alert-success' : 'alert-danger'"
-        role="alert"
-      >
-        <div class="d-flex justify-content-between align-items-start">
-          <div>
-            <span class="badge text-bg-secondary text-uppercase mb-2">[[ message.category ]]</span>
-            <h2 class="h6 mb-1">[[ message.summary ]]</h2>
-            <p class="mb-0" v-if="message.detail">[[ message.detail ]]</p>
+      <div class="card shadow-sm">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+          <h2 class="h5 mb-0">通知</h2>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            @click="ui.messagesExpanded = !ui.messagesExpanded"
+          >
+            [[ ui.messagesExpanded ? '非表示' : '表示' ]]
+          </button>
+        </div>
+        <div class="card-body" v-show="ui.messagesExpanded">
+          <div
+            v-for="(message, index) in state.messages"
+            :key="`message-${index}`"
+            :class="[
+              'alert',
+              message.success ? 'alert-success' : 'alert-danger',
+              index === state.messages.length - 1 ? 'mb-0' : 'mb-3',
+            ]"
+            role="alert"
+          >
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <span class="badge text-bg-secondary text-uppercase mb-2">[[ message.category ]]</span>
+                <h3 class="h6 mb-1">[[ message.summary ]]</h3>
+                <p class="mb-0" v-if="message.detail">[[ message.detail ]]</p>
+              </div>
+              <small class="text-muted ms-3">[[ message.timestamp ]]</small>
+            </div>
           </div>
-          <small class="text-muted ms-3">[[ message.timestamp ]]</small>
         </div>
       </div>
     </section>
@@ -270,39 +287,58 @@
     <section class="card shadow-sm mt-4">
       <div class="card-header bg-white d-flex justify-content-between align-items-center">
         <h2 class="h5 mb-0">ジョブ状況</h2>
-        <span class="text-muted small">最新 20 件を表示</span>
+        <span class="text-muted small">1ページあたり [[ state.jobsPagination.pageSize ]] 件</span>
       </div>
       <div class="card-body">
         <p class="text-muted mb-0" v-if="!state.jobs.length">ジョブ履歴はまだありません。</p>
-        <div class="table-responsive" v-else>
-          <table class="table table-sm align-middle">
-            <thead>
-              <tr>
-                <th scope="col">Job ID</th>
-                <th scope="col">Order ID</th>
-                <th scope="col">ステータス</th>
-                <th scope="col">ページ進捗</th>
-                <th scope="col">更新日時</th>
-                <th scope="col">最終エラー</th>
-                <th scope="col" class="text-center">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="job in state.jobs" :key="job.jobId">
-                <td class="text-break"><code>[[ job.jobId ]]</code></td>
-                <td class="text-break">[[ job.orderId ]]</td>
-                <td><span class="badge text-bg-secondary">[[ job.statusLabel ]]</span></td>
-                <td>
-                  [[ job.processedPages !== null && job.totalPages !== null
-                    ? job.processedPages + ' / ' + job.totalPages + (job.skippedPages !== null ? ' (skip ' + job.skippedPages + ')' : '')
-                    : '-' ]]
-                </td>
-                <td>
-                  <div>作成 [[ job.createdAt ]]</div>
-                  <div>更新 [[ job.updatedAt ]]</div>
-                </td>
-                <td class="text-break">[[ job.lastError || '-' ]]</td>
-                <td class="text-center">
+        <div class="accordion" id="jobsAccordion" v-else>
+          <div
+            class="accordion-item"
+            v-for="(job, index) in state.jobs"
+            :key="`job-${job.jobId}-${index}`"
+          >
+            <h2 class="accordion-header" :id="`job-heading-${index}`">
+              <button
+                class="accordion-button collapsed"
+                type="button"
+                data-bs-toggle="collapse"
+                :data-bs-target="`#job-body-${index}`"
+                aria-expanded="false"
+                :aria-controls="`job-body-${index}`"
+              >
+                <span class="badge text-bg-secondary me-3">[[ job.statusLabel ]]</span>
+                <span class="me-3 fw-semibold text-break">Job [[ job.jobId ]]</span>
+                <span class="text-muted me-3 text-break">Order [[ job.orderId ]]</span>
+                <span class="text-muted small ms-auto">更新 [[ job.updatedAt ]]</span>
+              </button>
+            </h2>
+            <div
+              :id="`job-body-${index}`"
+              class="accordion-collapse collapse"
+              :aria-labelledby="`job-heading-${index}`"
+            >
+              <div class="accordion-body">
+                <dl class="row mb-0">
+                  <dt class="col-sm-3">Job ID</dt>
+                  <dd class="col-sm-9 text-break"><code>[[ job.jobId ]]</code></dd>
+                  <dt class="col-sm-3">Order ID</dt>
+                  <dd class="col-sm-9 text-break">[[ job.orderId ]]</dd>
+                  <dt class="col-sm-3">ステータス</dt>
+                  <dd class="col-sm-9"><span class="badge text-bg-secondary">[[ job.statusLabel ]]</span></dd>
+                  <dt class="col-sm-3">ページ進捗</dt>
+                  <dd class="col-sm-9">
+                    [[ job.processedPages !== null && job.totalPages !== null
+                      ? job.processedPages + ' / ' + job.totalPages + (job.skippedPages !== null ? ' (skip ' + job.skippedPages + ')' : '')
+                      : '-' ]]
+                  </dd>
+                  <dt class="col-sm-3">作成日時</dt>
+                  <dd class="col-sm-9">[[ job.createdAt ]]</dd>
+                  <dt class="col-sm-3">更新日時</dt>
+                  <dd class="col-sm-9">[[ job.updatedAt ]]</dd>
+                  <dt class="col-sm-3">最終エラー</dt>
+                  <dd class="col-sm-9 text-break">[[ job.lastError || '(なし)' ]]</dd>
+                </dl>
+                <div class="mt-3">
                   <form
                     v-if="job.canCancel"
                     method="post"
@@ -313,14 +349,52 @@
                     <button type="submit" class="btn btn-outline-danger btn-sm">中断</button>
                   </form>
                   <span v-else-if="job.cancellationRequested" class="badge text-bg-warning">中断要求中</span>
-                  <span v-else>-</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                  <span v-else class="text-muted">中断不可</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+        <nav
+          v-if="state.jobsPagination.totalPages > 1"
+          class="mt-3"
+          aria-label="ジョブ履歴ページネーション"
+        >
+          <ul class="pagination pagination-sm mb-0">
+            <li class="page-item" :class="{ disabled: !state.jobsPagination.hasPrev }">
+              <a
+                class="page-link"
+                :href="state.jobsPagination.hasPrev ? jobPageLink(state.jobsPagination.page - 1) : '#'"
+                aria-label="前のページ"
+                :tabindex="state.jobsPagination.hasPrev ? null : -1"
+              >
+                前へ
+              </a>
+            </li>
+            <li
+              class="page-item"
+              v-for="page in jobPageNumbers"
+              :key="`job-page-${page}`"
+              :class="{ active: page === state.jobsPagination.page }"
+            >
+              <a class="page-link" :href="jobPageLink(page)">[[ page ]]</a>
+            </li>
+            <li class="page-item" :class="{ disabled: !state.jobsPagination.hasNext }">
+              <a
+                class="page-link"
+                :href="state.jobsPagination.hasNext ? jobPageLink(state.jobsPagination.page + 1) : '#'"
+                aria-label="次のページ"
+                :tabindex="state.jobsPagination.hasNext ? null : -1"
+              >
+                次へ
+              </a>
+            </li>
+          </ul>
+        </nav>
       </div>
     </section>
+
+
 
     <section class="card shadow-sm mt-4">
       <div class="card-header bg-white d-flex justify-content-between align-items-center">
@@ -579,7 +653,20 @@
               payload: initialState.defaults.webhookPayload,
             },
           },
+          ui: {
+            messagesExpanded: true,
+          },
         };
+      },
+      computed: {
+        jobPageNumbers() {
+          const pagination = this.state.jobsPagination || {};
+          const total = pagination.totalPages || 0;
+          if (!total || total < 1) {
+            return [];
+          }
+          return Array.from({ length: total }, (_, index) => index + 1);
+        },
       },
       methods: {
         formatJson(value) {
@@ -591,6 +678,19 @@
           } catch (error) {
             return String(value);
           }
+        },
+        jobPageLink(page) {
+          if (!page || page < 1) {
+            return '#';
+          }
+          const pagination = this.state.jobsPagination || {};
+          if (pagination.totalPages && page > pagination.totalPages) {
+            return '#';
+          }
+          const search = new URLSearchParams(window.location.search);
+          search.set('job_page', String(page));
+          const query = search.toString();
+          return query ? `${window.location.pathname}?${query}` : window.location.pathname;
         },
       },
     });
