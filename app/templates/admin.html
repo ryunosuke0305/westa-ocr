@@ -109,7 +109,7 @@
             <h2 class="h5 mb-0">Gemini へ手動リクエスト</h2>
           </div>
           <div class="card-body">
-            <form method="post" action="/admin/gemini">
+            <form method="post" action="/admin/gemini" enctype="multipart/form-data">
               <div class="mb-3">
                 <label for="gemini-prompt" class="form-label">プロンプト</label>
                 <textarea
@@ -122,41 +122,17 @@
                   placeholder="例: 添付の発注書から取引先名と合計金額を抽出してください"
                 ></textarea>
               </div>
-              <div class="row g-3">
-                <div class="col-md-6">
-                  <label for="gemini-input-mode" class="form-label">入力データの種類</label>
-                  <select
-                    id="gemini-input-mode"
-                    name="input_mode"
-                    class="form-select"
-                    v-model="forms.gemini.inputMode"
-                  >
-                    <option value="text">テキスト</option>
-                    <option value="base64">Base64</option>
-                  </select>
-                </div>
-                <div class="col-md-6">
-                  <label for="gemini-mime-type" class="form-label">MIME Type</label>
-                  <input
-                    id="gemini-mime-type"
-                    name="mime_type"
-                    type="text"
-                    class="form-control"
-                    v-model="forms.gemini.mimeType"
-                    placeholder="例: application/pdf"
-                  />
-                </div>
-              </div>
-              <div class="mb-3 mt-3">
-                <label for="gemini-content" class="form-label">入力データ</label>
-                <textarea
-                  id="gemini-content"
-                  name="content"
+              <div class="mb-3">
+                <label for="gemini-pdf" class="form-label">PDF ファイル</label>
+                <input
+                  id="gemini-pdf"
+                  name="pdf_file"
+                  type="file"
                   class="form-control"
-                  rows="5"
-                  v-model="forms.gemini.content"
-                  placeholder="例: PDF ファイルを Base64 変換した文字列、または解析対象テキスト"
-                ></textarea>
+                  accept="application/pdf"
+                  required
+                />
+                <div class="form-text">Gemini に送信する PDF ファイルをアップロードしてください。</div>
               </div>
               <div class="mb-3">
                 <label for="gemini-masters" class="form-label">マスター情報(JSON)</label>
@@ -189,7 +165,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.temperature"
-                    placeholder="0.0 から 1.0 の範囲"
+                    :placeholder="`既定値: ${state.defaults.geminiTemperature}`"
                   />
                 </div>
                 <div class="col-md-4">
@@ -200,7 +176,7 @@
                     type="text"
                     class="form-control"
                     v-model="forms.gemini.topP"
-                    placeholder="0.0 から 1.0 の範囲"
+                    :placeholder="`既定値: ${state.defaults.geminiTopP}`"
                   />
                 </div>
                 <div class="col-md-4">
@@ -637,13 +613,18 @@
             settings,
             gemini: {
               prompt: '',
-              inputMode: 'text',
-              content: '',
-              mimeType: initialState.defaults.mimeType,
               masters: initialState.defaults.masters,
               model: '',
-              temperature: '',
-              topP: '',
+              temperature:
+                initialState.defaults.geminiTemperature !== undefined &&
+                initialState.defaults.geminiTemperature !== null
+                  ? String(initialState.defaults.geminiTemperature)
+                  : '',
+              topP:
+                initialState.defaults.geminiTopP !== undefined &&
+                initialState.defaults.geminiTopP !== null
+                  ? String(initialState.defaults.geminiTopP)
+                  : '',
               topK: '',
               maxOutputTokens: '',
             },
