@@ -267,7 +267,7 @@ class JobRepository:
             ).fetchall()
         return [row["job_id"] for row in rows]
 
-    def list_recent_jobs(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_recent_jobs(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         with self._locked():
             rows = self._conn.execute(
                 """
@@ -281,10 +281,14 @@ class JobRepository:
                        created_at,
                        updated_at
                   FROM jobs
-              ORDER BY created_at DESC
-                 LIMIT ?
+             ORDER BY created_at DESC
+                LIMIT ?
+               OFFSET ?
                 """,
-                (limit,),
+                (
+                    limit,
+                    offset,
+                ),
             ).fetchall()
         jobs: List[Dict[str, Any]] = []
         for row in rows:
@@ -304,6 +308,11 @@ class JobRepository:
                 }
             )
         return jobs
+
+    def count_jobs(self) -> int:
+        with self._locked():
+            row = self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()
+        return int(row[0]) if row else 0
 
     def mark_enqueued(self, job_id: str) -> None:
         with self._locked():
