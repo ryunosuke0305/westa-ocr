@@ -105,3 +105,12 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     assert logs[1]["prompt_preview"].startswith("first prompt")
 
     repository.close()
+
+
+def test_repository_uses_delete_journal_mode(tmp_path: Path) -> None:
+    repository = _create_repository(tmp_path)
+
+    mode = repository._conn.execute("PRAGMA journal_mode;").fetchone()[0]
+    assert mode.lower() == "delete"
+
+    repository.close()
