@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, Form, Request, status
+from fastapi import FastAPI, File, Form, Request, UploadFile, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from zoneinfo import ZoneInfo
@@ -29,6 +29,9 @@ LOGGER = get_logger(__name__)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 _JST = ZoneInfo("Asia/Tokyo")
+
+DEFAULT_GEMINI_TEMPERATURE = 0.1
+DEFAULT_GEMINI_TOP_P = 0.9
 
 
 @dataclass(slots=True)
@@ -384,12 +387,13 @@ def _build_dashboard_payload(
             "hasNext": job_total_pages > 0 and job_page < job_total_pages,
         },
         "defaults": {
-            "mimeType": "text/plain",
             "masters": "{}",
             "webhookPayload": "{}",
             "webhookToken": "",
             "webhookUrl": settings.webhook_url or "",
             "geminiModel": settings.gemini_model,
+            "geminiTemperature": DEFAULT_GEMINI_TEMPERATURE,
+            "geminiTopP": DEFAULT_GEMINI_TOP_P,
         },
     }
 
@@ -423,9 +427,8 @@ def _parse_page_number(value: Optional[str], *, default: int = 1) -> int:
 def _build_admin_gemini_request_snapshot(
     *,
     prompt: str,
-    input_mode: str,
+    filename: str,
     mime_type: str,
-    page_content: str,
     page_bytes: bytes,
     masters: Dict[str, Any],
     model: str,
@@ -434,20 +437,16 @@ def _build_admin_gemini_request_snapshot(
     top_k: Optional[int],
     max_output_tokens: Optional[int],
 ) -> Dict[str, Any]:
-    preview_limit = 500
-    preview_text = page_content[:preview_limit]
+    preview_limit = 120
+    sample_bytes = page_bytes[:preview_limit]
     input_snapshot: Dict[str, Any] = {
-        "mode": input_mode,
+        "filename": filename,
         "mimeType": mime_type,
         "sizeBytes": len(page_bytes),
-        "isPreviewTruncated": len(page_content) > preview_limit,
     }
-    if input_mode == "text":
-        input_snapshot["textPreview"] = preview_text
-    elif input_mode == "base64":
-        base64_limit = 120
-        input_snapshot["base64Sample"] = page_content[:base64_limit]
-        input_snapshot["isBase64Truncated"] = len(page_content) > base64_limit
+    if sample_bytes:
+        input_snapshot["base64Sample"] = base64.b64encode(sample_bytes).decode("ascii")
+    input_snapshot["isBase64Truncated"] = len(page_bytes) > preview_limit
     parameters = {
         "model": model,
         "temperature": temperature,
@@ -547,18 +546,15 @@ def register_admin_routes(app: FastAPI) -> None:
     async def send_gemini(
         request: Request,
         prompt: str = Form(...),
-        input_mode: str = Form("text"),
-        content: str = Form(""),
-        mime_type: str = Form("text/plain"),
         masters: str = Form("{}"),
         model: str = Form(""),
         temperature: str = Form(""),
         top_p: str = Form(""),
         top_k: str = Form(""),
         max_output_tokens: str = Form(""),
+        pdf_file: UploadFile = File(...),
     ) -> RedirectResponse:
         prompt = prompt.strip()
-        page_content = content.strip()
         if not prompt:
             state.add_message(
                 AdminMessage(
@@ -570,14 +566,41 @@ def register_admin_routes(app: FastAPI) -> None:
                 )
             )
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
-        if not page_content:
+
+        if pdf_file is None:
             state.add_message(
                 AdminMessage(
                     timestamp=datetime.now(timezone.utc),
                     category="gemini",
                     success=False,
-                    summary="入力データを指定してください",
+                    summary="PDF ファイルをアップロードしてください",
                     detail=None,
+                )
+            )
+            return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+        try:
+            page_bytes = await pdf_file.read()
+        except Exception as exc:
+            state.add_message(
+                AdminMessage(
+                    timestamp=datetime.now(timezone.utc),
+                    category="gemini",
+                    success=False,
+                    summary="PDF ファイルの読み込みに失敗しました",
+                    detail=str(exc),
+                )
+            )
+            return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+        if not page_bytes:
+            state.add_message(
+                AdminMessage(
+                    timestamp=datetime.now(timezone.utc),
+                    category="gemini",
+                    success=False,
+                    summary="PDF ファイルが空です",
+                    detail="ファイル内容を確認してください。",
                 )
             )
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
@@ -615,33 +638,21 @@ def register_admin_routes(app: FastAPI) -> None:
             )
             return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
-        try:
-            if input_mode == "base64":
-                page_bytes = base64.b64decode(page_content, validate=True)
-            else:
-                page_bytes = page_content.encode("utf-8")
-        except Exception as exc:
-            state.add_message(
-                AdminMessage(
-                    timestamp=datetime.now(timezone.utc),
-                    category="gemini",
-                    success=False,
-                    summary="入力データの変換に失敗しました",
-                    detail=str(exc),
-                )
-            )
-            return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+        if temperature_value is None:
+            temperature_value = DEFAULT_GEMINI_TEMPERATURE
+        if top_p_value is None:
+            top_p_value = DEFAULT_GEMINI_TOP_P
 
         gemini_client: GeminiClient = request.app.state.gemini_client
         repository = request.app.state.repository
         settings: Settings = request.app.state.settings
         effective_model = model or settings.gemini_model
-        effective_mime_type = mime_type or "application/octet-stream"
+        effective_mime_type = pdf_file.content_type or "application/pdf"
+        filename = pdf_file.filename or "uploaded.pdf"
         request_snapshot = _build_admin_gemini_request_snapshot(
             prompt=prompt,
-            input_mode=input_mode,
+            filename=filename,
             mime_type=effective_mime_type,
-            page_content=page_content,
             page_bytes=page_bytes,
             masters=masters_payload,
             model=effective_model,
