@@ -20,7 +20,7 @@ from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
 from .logging_config import configure_logging, get_logger
 from .models import JobStatus
-from .settings import Settings, get_settings
+from .settings import Settings, get_settings, save_env_file
 from .webhook import WebhookDispatcher
 from .worker import JobWorker
 
@@ -215,6 +215,11 @@ CONFIG_FIELDS: List[Dict[str, str]] = [
     {"env": "WORKER_COUNT", "label": "Worker Count", "placeholder": "スレッド数 (例: 10)"},
     {"env": "GEMINI_API_KEY", "label": "Gemini API Key", "placeholder": "Google AI Studio の API キー"},
     {"env": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "例: gemini-2.5-flash"},
+    {
+        "env": "WEBHOOK_URL",
+        "label": "Webhook URL Override",
+        "placeholder": "例: https://example.com/webhook",
+    },
     {"env": "WEBHOOK_TIMEOUT", "label": "Webhook Timeout", "placeholder": "秒数 (例: 30)"},
     {"env": "REQUEST_TIMEOUT", "label": "Request Timeout", "placeholder": "秒数 (例: 600)"},
     {"env": "LOG_LEVEL", "label": "Log Level", "placeholder": "例: INFO / DEBUG"},
@@ -383,6 +388,7 @@ def _build_dashboard_payload(
             "masters": "{}",
             "webhookPayload": "{}",
             "webhookToken": "",
+            "webhookUrl": settings.webhook_url or "",
             "geminiModel": settings.gemini_model,
         },
     }
@@ -883,6 +889,8 @@ def register_admin_routes(app: FastAPI) -> None:
             _apply()
             get_settings.cache_clear()
             new_settings = get_settings()
+            env_snapshot = {field["env"]: os.getenv(field["env"]) for field in CONFIG_FIELDS}
+            save_env_file(env_snapshot)
         except Exception as exc:
             _restore()
             get_settings.cache_clear()

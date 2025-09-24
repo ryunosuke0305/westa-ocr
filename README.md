@@ -206,6 +206,7 @@ GAS(doPost) で検証・保存・集計
 | WORKER_COUNT              | `10`               | 並列実行するジョブワーカーのスレッド数 |
 | GEMINI_API_KEY            | なし               | 未設定だとシミュレーション動作 |
 | GEMINI_MODEL              | `gemini-2.5-flash` | 既定モデル名 |
+| WEBHOOK_URL               | なし               | 設定時はジョブ登録時の URL をこの値で上書き |
 | WEBHOOK_TIMEOUT           | `30.0`             | Webhook POST タイムアウト（秒） |
 | REQUEST_TIMEOUT           | `600.0`            | Drive / Gemini への HTTP タイムアウト（秒） |
 | LOG_LEVEL                 | `INFO`             | Python ロガーのレベル |

@@ -23,7 +23,7 @@ from .gemini import GeminiClient
 from .logging_config import configure_logging, get_logger
 from .models import ErrorResponse, JobDetail, JobRequest, JobResponse, JobStatus
 from .repository import JobRepository
-from .settings import get_settings
+from .settings import ENV_FILE_PATH, Settings, get_settings, load_env_file
 from .webhook import WebhookDispatcher
 from .worker import JobWorker
 
@@ -111,6 +111,7 @@ def register_routes(app: FastAPI) -> None:
         repository: JobRepository = request.app.state.repository
         job_queue: queue.Queue[str] = request.app.state.job_queue
         admin_state: AdminState = request.app.state.admin_state
+        settings: Settings = request.app.state.settings
 
         idempotency_key = payload.idempotency_key or payload.order_id
         request_snapshot = json.dumps(
@@ -146,6 +147,20 @@ def register_routes(app: FastAPI) -> None:
 
         job_id = _generate_job_id()
         LOGGER.info("Registering new job", extra={"jobId": job_id, "orderId": payload.order_id})
+        webhook_payload = payload.webhook.model_dump(mode="json")
+        webhook_override_applied = False
+        if settings.webhook_url:
+            webhook_payload["url"] = settings.webhook_url
+            webhook_override_applied = True
+            LOGGER.info(
+                "Overriding webhook URL from settings",
+                extra={
+                    "jobId": job_id,
+                    "orderId": payload.order_id,
+                    "webhookUrl": settings.webhook_url,
+                },
+            )
+
         try:
             repository.insert_job(
                 job_id=job_id,
@@ -154,7 +169,7 @@ def register_routes(app: FastAPI) -> None:
                 prompt=payload.prompt,
                 pattern=payload.pattern,
                 masters=payload.masters.model_dump(mode="json", by_alias=True),
-                webhook=payload.webhook.model_dump(mode="json"),
+                webhook=webhook_payload,
                 gemini=(
                     payload.gemini.model_dump(mode="json", by_alias=True, exclude_none=True)
                     if payload.gemini
@@ -181,13 +196,16 @@ def register_routes(app: FastAPI) -> None:
 
         repository.mark_enqueued(job_id)
         job_queue.put(job_id)
+        message = "新規ジョブを登録しました"
+        if webhook_override_applied:
+            message += "（Webhook URL を設定値で上書きしました）"
         admin_state.add_relay_request_log(
             job_id=job_id,
             order_id=payload.order_id,
             idempotency_key=idempotency_key,
             status=JobStatus.RECEIVED.value,
             payload=request_snapshot,
-            message="新規ジョブを登録しました",
+            message=message,
         )
         return JobResponse(job_id=job_id, correlation_id=payload.order_id, status=JobStatus.RECEIVED)
 
@@ -216,6 +234,12 @@ def register_events(app: FastAPI) -> None:
 
         async def initialize() -> None:
             try:
+                loaded = load_env_file()
+                if loaded:
+                    LOGGER.info(
+                        "Loaded environment overrides from file",
+                        extra={"path": str(ENV_FILE_PATH), "keyCount": len(loaded)},
+                    )
                 components, pending = await asyncio.to_thread(
                     _build_components, app.state.admin_state
                 )
