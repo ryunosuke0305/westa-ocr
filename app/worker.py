@@ -52,7 +52,7 @@ class JobWorker(threading.Thread):
         self._stop_event.set()
 
     def run(self) -> None:  # pragma: no cover - threading logic
-        LOGGER.info("Worker thread started", extra={"threadName": self.name})
+        LOGGER.info("Worker thread started", extra={"workerName": self.name})
         while not self._stop_event.is_set():
             try:
                 job_id = self._queue.get(timeout=self._idle_sleep)
@@ -65,7 +65,7 @@ class JobWorker(threading.Thread):
                 self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
             finally:
                 self._queue.task_done()
-        LOGGER.info("Worker thread stopped", extra={"threadName": self.name})
+        LOGGER.info("Worker thread stopped", extra={"workerName": self.name})
 
     def _process_job(self, job_id: str) -> None:
         try:
