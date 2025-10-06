@@ -500,7 +500,7 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
             gemini_client=new_gemini,
             webhook_dispatcher=new_webhook,
             idle_sleep=settings.worker_idle_sleep,
-            page_concurrency=settings.worker_page_concurrency,
+            page_concurrency=settings.worker_count,
             admin_state=app.state.admin_state,
             worker_number=index + 1,
             name=f"JobWorker-{index + 1}",
