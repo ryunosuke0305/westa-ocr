@@ -203,8 +203,7 @@ GAS(doPost) で検証・保存・集計
 | SQLITE_PATH               | `/data/relay.db`   | SQLite ファイルパス |
 | TMP_DIR                   | `/data/tmp`        | 予約（現状未使用） |
 | WORKER_IDLE_SLEEP         | `1.0`              | ワーカーがキュー待機するときの sleep 秒数 |
-| WORKER_COUNT              | `10`               | 並列実行するジョブワーカーのスレッド数 |
-| WORKER_PAGE_CONCURRENCY   | `1`                | 1 ジョブ内で同時実行するページ処理スレッド数 |
+| WORKER_COUNT              | `10`               | 並列実行するジョブワーカーのスレッド数。ページ処理の同時実行数にも利用される |
 | GEMINI_API_KEY            | なし               | 未設定だとシミュレーション動作 |
 | GEMINI_MODEL              | `gemini-2.5-flash` | 既定モデル名 |
 | WEBHOOK_URL               | なし               | 設定時はジョブ登録時の URL をこの値で上書き |
