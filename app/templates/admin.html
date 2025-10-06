@@ -511,6 +511,7 @@
                   [[ log.success ? '成功' : '失敗' ]]
                 </span>
                 <span class="badge text-bg-secondary me-3">[[ log.sourceLabel ]]</span>
+                <span class="badge text-bg-info me-3" v-if="log.workerName">[[ log.workerName ]]</span>
                 <span class="me-3 fw-semibold">[[ log.model ]]</span>
                 <span class="me-3 text-muted">[[ log.mimeType ]]</span>
                 <span class="text-muted small">[[ log.timestamp ]]</span>
@@ -526,6 +527,8 @@
                   <dl class="row mb-0">
                     <dt class="col-sm-3">ソース</dt>
                     <dd class="col-sm-9">[[ log.source ]]</dd>
+                    <dt class="col-sm-3">ワーカー</dt>
+                    <dd class="col-sm-9">[[ log.workerName || '-' ]]</dd>
                     <dt class="col-sm-3">プロンプト</dt>
                     <dd class="col-sm-9">[[ log.promptPreview ]]</dd>
                     <dt class="col-sm-3">リクエスト</dt>

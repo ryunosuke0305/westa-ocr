@@ -85,6 +85,7 @@ class JobRepository:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 source TEXT NOT NULL,
+                worker_name TEXT,
                 prompt_preview TEXT NOT NULL,
                 model TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
@@ -97,6 +98,14 @@ class JobRepository:
             """
         )
         self._ensure_worker_name_column()
+        self._ensure_gemini_worker_column()
+
+    def _ensure_gemini_worker_column(self) -> None:
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(gemini_logs)").fetchall()
+        }
+        if "worker_name" not in existing_columns:
+            self._conn.execute("ALTER TABLE gemini_logs ADD COLUMN worker_name TEXT")
 
     def _ensure_worker_name_column(self) -> None:
         existing_columns = {
@@ -430,6 +439,7 @@ class JobRepository:
         self,
         *,
         source: str,
+        worker_name: Optional[str],
         prompt: str,
         model: str,
         mime_type: str,
@@ -441,6 +451,7 @@ class JobRepository:
     ) -> None:
         payload = {
             "source": source,
+            "worker_name": worker_name,
             "prompt_preview": (prompt or "")[:200].replace("\n", " "),
             "model": model,
             "mime_type": mime_type,
@@ -454,10 +465,10 @@ class JobRepository:
             self._conn.execute(
                 """
                 INSERT INTO gemini_logs (
-                    source, prompt_preview, model, mime_type, request_json,
+                    source, worker_name, prompt_preview, model, mime_type, request_json,
                     success, response_text, meta_json, error
                 ) VALUES (
-                    :source, :prompt_preview, :model, :mime_type, :request_json,
+                    :source, :worker_name, :prompt_preview, :model, :mime_type, :request_json,
                     :success, :response_text, :meta_json, :error
                 )
                 """,
@@ -469,7 +480,7 @@ class JobRepository:
             rows = self._conn.execute(
                 """
                 SELECT id, created_at, source, prompt_preview, model, mime_type,
-                       request_json, success, response_text, meta_json, error
+                       worker_name, request_json, success, response_text, meta_json, error
                   FROM gemini_logs
                  ORDER BY id DESC
                  LIMIT ?
@@ -491,6 +502,7 @@ class JobRepository:
                     "id": row["id"],
                     "timestamp": timestamp,
                     "source": row["source"],
+                    "worker_name": row["worker_name"],
                     "prompt_preview": row["prompt_preview"],
                     "model": row["model"],
                     "mime_type": row["mime_type"],
