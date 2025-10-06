@@ -188,7 +188,7 @@ GAS(doPost) で検証・保存・集計
 - **FileFetcher**: `http(s)://`、`file://`、`local:`、および Google Drive のファイル ID に対応。Drive 利用時はサービスアカウント認証（`DRIVE_SERVICE_ACCOUNT_JSON`）を読み込み、必要に応じてトークンをリフレッシュする。
 - **GeminiClient**: `models/{model}:generateContent` を呼び出し、ページ PDF・プロンプト・マスタ CSV を 1 リクエストにまとめる。API キー未設定時はシミュレーションレスポンスを返すので、ローカル検証が容易。
 - **WebhookDispatcher**: Apps Script など 302 を返すエンドポイントにも対応できるよう `follow_redirects=True` で POST。Bearer トークンを自動付与し、失敗時は例外で呼び出し元に通知する。
-- **JobWorker**: 指定したスレッド数だけ起動され、キューからジョブを取り出して並列に処理する。ページ結果は都度 SQLite と Webhook に記録し、途中失敗時は `_handle_initial_failure` でサマリを送信してジョブを `ERROR` として終了させる。
+- **JobWorker**: 指定したスレッド数だけ起動され、キューからジョブを取り出して並列に処理する。ページ処理は Gemini 呼び出し単位でも並列化され、複数ページ PDF も単一ページ PDF 群もページごとのスレッドで同時実行できる。ページ結果は都度 SQLite と Webhook に記録し、途中失敗時は `_handle_initial_failure` でサマリを送信してジョブを `ERROR` として終了させる。
 
 ---
 
@@ -204,6 +204,7 @@ GAS(doPost) で検証・保存・集計
 | TMP_DIR                   | `/data/tmp`        | 予約（現状未使用） |
 | WORKER_IDLE_SLEEP         | `1.0`              | ワーカーがキュー待機するときの sleep 秒数 |
 | WORKER_COUNT              | `10`               | 並列実行するジョブワーカーのスレッド数 |
+| WORKER_PAGE_CONCURRENCY   | `1`                | 1 ジョブ内で同時実行するページ処理スレッド数 |
 | GEMINI_API_KEY            | なし               | 未設定だとシミュレーション動作 |
 | GEMINI_MODEL              | `gemini-2.5-flash` | 既定モデル名 |
 | WEBHOOK_URL               | なし               | 設定時はジョブ登録時の URL をこの値で上書き |
