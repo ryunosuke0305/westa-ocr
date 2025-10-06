@@ -63,6 +63,7 @@ class JobRepository:
                 skipped_pages INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                worker_name TEXT,
                 UNIQUE(idempotency_key)
             );
 
@@ -95,6 +96,14 @@ class JobRepository:
             );
             """
         )
+        self._ensure_worker_name_column()
+
+    def _ensure_worker_name_column(self) -> None:
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "worker_name" not in existing_columns:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN worker_name TEXT")
 
     @contextmanager
     def _locked(self):
@@ -155,18 +164,38 @@ class JobRepository:
                 payload,
             )
 
-    def update_job_status(self, job_id: str, status: JobStatus, error: Optional[str] = None) -> None:
+    def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        error: Optional[str] = None,
+        *,
+        worker_name: Optional[str] = None,
+    ) -> None:
         with self._locked():
-            self._conn.execute(
-                """
-                UPDATE jobs
-                   SET status = ?,
-                       last_error = ?,
-                       updated_at = datetime('now')
-                 WHERE job_id = ?
-                """,
-                (status.value, error, job_id),
-            )
+            if worker_name is not None:
+                self._conn.execute(
+                    """
+                    UPDATE jobs
+                       SET status = ?,
+                           last_error = ?,
+                           worker_name = ?,
+                           updated_at = datetime('now')
+                     WHERE job_id = ?
+                    """,
+                    (status.value, error, worker_name, job_id),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    UPDATE jobs
+                       SET status = ?,
+                           last_error = ?,
+                           updated_at = datetime('now')
+                     WHERE job_id = ?
+                    """,
+                    (status.value, error, job_id),
+                )
 
     def update_job_counters(
         self,
@@ -278,6 +307,7 @@ class JobRepository:
                        total_pages,
                        processed_pages,
                        skipped_pages,
+                       worker_name,
                        created_at,
                        updated_at
                   FROM jobs
@@ -303,6 +333,7 @@ class JobRepository:
                     "total_pages": row["total_pages"],
                     "processed_pages": row["processed_pages"],
                     "skipped_pages": row["skipped_pages"],
+                    "worker_name": row["worker_name"],
                     "created_at": created_at,
                     "updated_at": updated_at,
                 }
@@ -381,6 +412,7 @@ class JobRepository:
             "masters": masters,
             "webhookUrl": job["webhook_url"],
             "webhookToken": job["webhook_token"],
+            "workerName": job["worker_name"],
             "createdAt": datetime.fromisoformat(job["created_at"]),
             "updatedAt": datetime.fromisoformat(job["updated_at"]),
             "totalPages": job["total_pages"],

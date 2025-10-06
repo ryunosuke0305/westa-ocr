@@ -107,6 +107,7 @@ class JobDetail(BaseModel):
     masters: Masters
     webhookUrl: HttpUrl
     webhookToken: str
+    workerName: Optional[str] = None
     createdAt: datetime
     updatedAt: datetime
     totalPages: Optional[int]

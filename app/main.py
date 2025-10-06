@@ -319,6 +319,7 @@ def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
                 webhook_dispatcher=webhook_dispatcher,
                 idle_sleep=settings.worker_idle_sleep,
                 admin_state=admin_state,
+                worker_number=index + 1,
                 name=f"JobWorker-{index + 1}",
             )
             for index in range(settings.worker_count)

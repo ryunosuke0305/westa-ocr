@@ -349,17 +349,18 @@ def _build_dashboard_payload(
     job_rows = []
     for job in jobs:
         cancellation_requested = state.is_cancellation_requested(job["job_id"])
-        job_rows.append(
-            {
-                "jobId": job["job_id"],
-                "orderId": job["order_id"],
-                "status": job["status"],
-                "statusLabel": job["status"],
-                "totalPages": job["total_pages"],
-                "processedPages": job["processed_pages"],
-                "skippedPages": job["skipped_pages"],
-                "lastError": job["last_error"],
-                "createdAt": _format_datetime(job["created_at"])
+                job_rows.append(
+                    {
+                        "jobId": job["job_id"],
+                        "orderId": job["order_id"],
+                        "status": job["status"],
+                        "statusLabel": job["status"],
+                        "workerName": job["worker_name"],
+                        "totalPages": job["total_pages"],
+                        "processedPages": job["processed_pages"],
+                        "skippedPages": job["skipped_pages"],
+                        "lastError": job["last_error"],
+                        "createdAt": _format_datetime(job["created_at"])
                 if job["created_at"]
                 else "-",
                 "updatedAt": _format_datetime(job["updated_at"])
@@ -499,6 +500,7 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
             webhook_dispatcher=new_webhook,
             idle_sleep=settings.worker_idle_sleep,
             admin_state=app.state.admin_state,
+            worker_number=index + 1,
             name=f"JobWorker-{index + 1}",
         )
         for index in range(settings.worker_count)

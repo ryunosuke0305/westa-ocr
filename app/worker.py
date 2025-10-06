@@ -36,9 +36,11 @@ class JobWorker(threading.Thread):
         webhook_dispatcher: WebhookDispatcher,
         idle_sleep: float,
         admin_state: "AdminState | None" = None,
+        worker_number: int,
         name: str | None = None,
     ) -> None:
-        super().__init__(daemon=True, name=name)
+        worker_name = name or f"JobWorker-{worker_number}"
+        super().__init__(daemon=True, name=worker_name)
         self._repository = repository
         self._queue = job_queue
         self._file_fetcher = file_fetcher
@@ -47,12 +49,16 @@ class JobWorker(threading.Thread):
         self._idle_sleep = idle_sleep
         self._admin_state = admin_state
         self._stop_event = threading.Event()
+        self.worker_number = worker_number
 
     def stop(self) -> None:
         self._stop_event.set()
 
     def run(self) -> None:  # pragma: no cover - threading logic
-        LOGGER.info("Worker thread started", extra={"workerName": self.name})
+        LOGGER.info(
+            "Worker thread started",
+            extra={"workerName": self.name, "workerNumber": self.worker_number},
+        )
         while not self._stop_event.is_set():
             try:
                 job_id = self._queue.get(timeout=self._idle_sleep)
@@ -61,11 +67,17 @@ class JobWorker(threading.Thread):
             try:
                 self._process_job(job_id)
             except Exception as exc:  # pragma: no cover - unexpected errors
-                LOGGER.exception("Unexpected error during job processing", extra={"jobId": job_id})
+                LOGGER.exception(
+                    "Unexpected error during job processing",
+                    extra={"jobId": job_id, "workerName": self.name},
+                )
                 self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
             finally:
                 self._queue.task_done()
-        LOGGER.info("Worker thread stopped", extra={"workerName": self.name})
+        LOGGER.info(
+            "Worker thread stopped",
+            extra={"workerName": self.name, "workerNumber": self.worker_number},
+        )
 
     def _process_job(self, job_id: str) -> None:
         try:
@@ -90,7 +102,11 @@ class JobWorker(threading.Thread):
                 self._repository.update_job_status(job_id, JobStatus.CANCELLED, CANCEL_REASON)
                 return
 
-            self._repository.update_job_status(job_id, JobStatus.PROCESSING)
+            self._repository.update_job_status(
+                job_id,
+                JobStatus.PROCESSING,
+                worker_name=self.name,
+            )
             LOGGER.info("Processing job", extra={"jobId": job_id, "orderId": job_row["order_id"]})
             masters = json.loads(job_row["masters_json"])
             gemini_config = json.loads(job_row["gemini_json"]) if job_row["gemini_json"] else {}
