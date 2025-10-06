@@ -301,6 +301,8 @@
                   <dd class="col-sm-9 text-break">[[ job.orderId ]]</dd>
                   <dt class="col-sm-3">ステータス</dt>
                   <dd class="col-sm-9"><span class="badge text-bg-secondary">[[ job.statusLabel ]]</span></dd>
+                  <dt class="col-sm-3">担当ワーカー</dt>
+                  <dd class="col-sm-9">[[ job.workerName || '-' ]]</dd>
                   <dt class="col-sm-3">ページ進捗</dt>
                   <dd class="col-sm-9">
                     [[ job.processedPages !== null && job.totalPages !== null
