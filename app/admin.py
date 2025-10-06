@@ -286,6 +286,7 @@ def _build_dashboard_payload(
                 "timestamp": _format_datetime(entry["timestamp"]),
                 "source": entry["source"],
                 "sourceLabel": entry["source"].upper(),
+                "workerName": entry.get("worker_name"),
                 "promptPreview": entry["prompt_preview"],
                 "model": entry["model"],
                 "mimeType": entry["mime_type"],
@@ -679,6 +680,7 @@ def register_admin_routes(app: FastAPI) -> None:
         except Exception as exc:
             repository.record_gemini_log(
                 source="admin",
+                worker_name=None,
                 prompt=prompt,
                 model=effective_model,
                 mime_type=effective_mime_type,
@@ -701,6 +703,7 @@ def register_admin_routes(app: FastAPI) -> None:
 
         repository.record_gemini_log(
             source="admin",
+            worker_name=None,
             prompt=prompt,
             model=effective_model,
             mime_type=effective_mime_type,

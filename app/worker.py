@@ -222,6 +222,7 @@ class JobWorker(threading.Thread):
                                 result = outcome["result"]
                                 self._repository.record_gemini_log(
                                     source="worker",
+                                    worker_name=self.name,
                                     prompt=job_row["prompt"],
                                     model=target_model,
                                     mime_type=page_to_emit.mime_type,
@@ -252,6 +253,7 @@ class JobWorker(threading.Thread):
                             else:
                                 self._repository.record_gemini_log(
                                     source="worker",
+                                    worker_name=self.name,
                                     prompt=job_row["prompt"],
                                     model=target_model,
                                     mime_type=page_to_emit.mime_type,

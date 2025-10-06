@@ -76,6 +76,7 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     repository = _create_repository(tmp_path)
     repository.record_gemini_log(
         source="admin",
+        worker_name=None,
         prompt="first prompt",
         model="model-a",
         mime_type="text/plain",
@@ -87,6 +88,7 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     )
     repository.record_gemini_log(
         source="worker",
+        worker_name="worker-1",
         prompt="second prompt",
         model="model-b",
         mime_type="application/pdf",
@@ -100,6 +102,7 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     logs = repository.list_gemini_logs()
     assert len(logs) == 2
     assert logs[0]["source"] == "worker"
+    assert logs[0]["worker_name"] == "worker-1"
     assert logs[0]["success"] is False
     assert logs[0]["request"]["prompt"] == "second prompt"
     assert logs[1]["prompt_preview"].startswith("first prompt")
