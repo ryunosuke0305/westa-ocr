@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Dict, Optional, TYPE_CHECKING, Union
 
 from .file_fetcher import FileFetcher
 from .gemini import GeminiClient
@@ -24,6 +24,57 @@ LOGGER = get_logger(__name__)
 CANCEL_REASON = "Cancelled via admin console"
 
 
+@dataclass(frozen=True)
+class JobTask:
+    """Task representing a job that needs to be split into page requests."""
+
+    job_id: str
+
+
+@dataclass(frozen=True)
+class PageTask:
+    """Task representing a single page generation request."""
+
+    job_id: str
+    page: PagePayload
+
+
+WorkerTask = Union[JobTask, PageTask]
+
+
+class PageJobContext:
+    """Shared state for coordinating page processing across workers."""
+
+    def __init__(
+        self,
+        *,
+        job_row,
+        masters: Dict[str, str],
+        gemini_config: Dict,
+        target_model: str,
+        prompt: str,
+        total_pages: int,
+        max_parallel: int,
+    ) -> None:
+        self.job_row = job_row
+        self.masters = masters
+        self.gemini_config = gemini_config
+        self.target_model = target_model
+        self.prompt = prompt
+        self.total_pages = total_pages
+        self.pending_pages = total_pages
+        self.processed_pages = 0
+        self.page_errors: list[Dict[str, str]] = []
+        self.cancelled = False
+        self.completed = False
+        self.lock = threading.Lock()
+        self.semaphore = threading.Semaphore(max(1, max_parallel))
+
+
+_JOB_CONTEXTS: dict[str, PageJobContext] = {}
+_JOB_CONTEXTS_LOCK = threading.Lock()
+
+
 class JobWorker(threading.Thread):
     """Threaded worker that processes jobs from the database queue."""
 
@@ -31,7 +82,7 @@ class JobWorker(threading.Thread):
         self,
         *,
         repository: JobRepository,
-        job_queue: "queue.Queue[str]",
+        job_queue: "queue.Queue[WorkerTask]",
         file_fetcher: FileFetcher,
         gemini_client: GeminiClient,
         webhook_dispatcher: WebhookDispatcher,
@@ -66,17 +117,24 @@ class JobWorker(threading.Thread):
         )
         while not self._stop_event.is_set():
             try:
-                job_id = self._queue.get(timeout=self._idle_sleep)
+                task = self._queue.get(timeout=self._idle_sleep)
             except queue.Empty:
                 continue
             try:
-                self._process_job(job_id)
+                if isinstance(task, JobTask):
+                    self._process_job(task.job_id)
+                elif isinstance(task, PageTask):
+                    self._process_page_task(task)
+                else:
+                    LOGGER.error("Unknown task received by worker", extra={"task": task})
             except Exception as exc:  # pragma: no cover - unexpected errors
+                job_id = getattr(task, "job_id", None)
                 LOGGER.exception(
                     "Unexpected error during job processing",
                     extra={"jobId": job_id, "workerName": self.name},
                 )
-                self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
+                if job_id:
+                    self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
             finally:
                 self._queue.task_done()
         LOGGER.info(
@@ -85,218 +143,294 @@ class JobWorker(threading.Thread):
         )
 
     def _process_job(self, job_id: str) -> None:
-        try:
-            job_row = self._repository.get_job(job_id)
-            if job_row is None:
-                LOGGER.warning("Job not found when processing", extra={"jobId": job_id})
-                return
+        job_row = self._repository.get_job(job_id)
+        if job_row is None:
+            LOGGER.warning("Job not found when processing", extra={"jobId": job_id})
+            return
 
-            if job_row["status"] not in (
-                JobStatus.RECEIVED.value,
-                JobStatus.ENQUEUED.value,
-                JobStatus.PROCESSING.value,
-            ):
-                LOGGER.info(
-                    "Skipping job in terminal state",
-                    extra={"jobId": job_id, "status": job_row["status"]},
-                )
-                return
-
-            if self._is_cancellation_requested(job_id):
-                LOGGER.info("Skipping job that was cancelled before processing", extra={"jobId": job_id})
-                self._repository.update_job_status(job_id, JobStatus.CANCELLED, CANCEL_REASON)
-                return
-
-            self._repository.update_job_status(
-                job_id,
-                JobStatus.PROCESSING,
-                worker_name=self.name,
+        if job_row["status"] not in (
+            JobStatus.RECEIVED.value,
+            JobStatus.ENQUEUED.value,
+            JobStatus.PROCESSING.value,
+        ):
+            LOGGER.info(
+                "Skipping job in terminal state",
+                extra={"jobId": job_id, "status": job_row["status"]},
             )
-            LOGGER.info("Processing job", extra={"jobId": job_id, "orderId": job_row["order_id"]})
-            masters = json.loads(job_row["masters_json"])
-            gemini_config = json.loads(job_row["gemini_json"]) if job_row["gemini_json"] else {}
-            options = json.loads(job_row["options_json"]) if job_row["options_json"] else {}
-            split_mode = (options.get("splitMode") or "pdf").lower()
+            return
+
+        if self._is_cancellation_requested(job_id):
+            LOGGER.info("Skipping job that was cancelled before processing", extra={"jobId": job_id})
+            self._repository.update_job_status(job_id, JobStatus.CANCELLED, CANCEL_REASON)
+            self._clear_cancellation_flag(job_id)
+            return
+
+        self._repository.update_job_status(
+            job_id,
+            JobStatus.PROCESSING,
+            worker_name=self.name,
+        )
+        LOGGER.info("Processing job", extra={"jobId": job_id, "orderId": job_row["order_id"]})
+        masters = json.loads(job_row["masters_json"])
+        gemini_config = json.loads(job_row["gemini_json"]) if job_row["gemini_json"] else {}
+        options = json.loads(job_row["options_json"]) if job_row["options_json"] else {}
+        split_mode = (options.get("splitMode") or "pdf").lower()
+
+        try:
+            file_bytes = self._file_fetcher.fetch(job_row["file_id"])
+        except Exception as exc:
+            self._handle_initial_failure(
+                job_row,
+                job_id,
+                log_message="Failed to fetch source file",
+                error_prefix="file fetch failed",
+                exc=exc,
+            )
+            self._clear_cancellation_flag(job_id)
+            return
+
+        try:
+            if split_mode != "pdf":
+                raise NotImplementedError("Only splitMode=pdf is currently supported")
+            pages = split_pdf(file_bytes)
+        except Exception as exc:
+            self._handle_initial_failure(
+                job_row,
+                job_id,
+                log_message="Failed to split PDF",
+                error_prefix="split failed",
+                exc=exc,
+            )
+            self._clear_cancellation_flag(job_id)
+            return
+
+        total_pages = len(pages)
+        target_model = gemini_config.get("model") or self._gemini.default_model
+
+        if total_pages == 0:
+            self._repository.update_job_counters(
+                job_id,
+                total_pages=0,
+                processed_pages=0,
+                skipped_pages=0,
+            )
+            self._repository.update_job_status(job_id, JobStatus.DONE, None)
+            self._send_summary(
+                job_row,
+                total_pages=0,
+                processed_pages=0,
+                skipped_pages=0,
+                errors=[],
+                status=JobStatus.DONE,
+            )
+            self._clear_cancellation_flag(job_id)
+            return
+
+        if self._is_cancellation_requested(job_id):
+            LOGGER.info(
+                "Skipping job that was cancelled after split",
+                extra={"jobId": job_id},
+            )
+            self._handle_job_cancellation(
+                job_row,
+                total_pages,
+                processed_pages=0,
+                page_errors=[],
+            )
+            self._clear_cancellation_flag(job_id)
+            return
+
+        max_parallel = min(self._page_concurrency, total_pages)
+        context = PageJobContext(
+            job_row=job_row,
+            masters=masters,
+            gemini_config=gemini_config,
+            target_model=target_model,
+            prompt=job_row["prompt"],
+            total_pages=total_pages,
+            max_parallel=max_parallel or 1,
+        )
+
+        with _JOB_CONTEXTS_LOCK:
+            _JOB_CONTEXTS[job_id] = context
+
+        for page in pages:
+            self._queue.put(PageTask(job_id=job_id, page=page))
+
+    def _process_page_task(self, task: PageTask) -> None:
+        context = self._get_job_context(task.job_id)
+        if context is None:
+            LOGGER.warning(
+                "Received page task without active job context",
+                extra={"jobId": task.job_id, "pageIndex": task.page.index},
+            )
+            return
+
+        context.semaphore.acquire(timeout=None)
+
+        try:
+            if context.cancelled or self._is_cancellation_requested(task.job_id):
+                self._complete_page(
+                    context,
+                    success=False,
+                    error=None,
+                    cancelled=True,
+                )
+                return
+
+            request_snapshot = self._build_request_snapshot(
+                context.job_row,
+                task.page,
+                context.masters,
+                context.gemini_config,
+                context.target_model,
+            )
 
             try:
-                file_bytes = self._file_fetcher.fetch(job_row["file_id"])
+                result = self._generate_page(
+                    page=task.page,
+                    prompt=context.prompt,
+                    masters=context.masters,
+                    gemini_config=context.gemini_config,
+                )
             except Exception as exc:
-                self._handle_initial_failure(
-                    job_row,
-                    job_id,
-                    log_message="Failed to fetch source file",
-                    error_prefix="file fetch failed",
-                    exc=exc,
+                self._repository.record_gemini_log(
+                    source="worker",
+                    worker_name=self.name,
+                    prompt=context.prompt,
+                    model=context.target_model,
+                    mime_type=task.page.mime_type,
+                    request=request_snapshot,
+                    success=False,
+                    response_text=None,
+                    meta=None,
+                    error=str(exc),
+                )
+                LOGGER.exception(
+                    "Failed to process page",
+                    extra={"jobId": task.job_id, "pageIndex": task.page.index},
+                )
+                self._repository.record_page_result(
+                    task.job_id,
+                    task.page.index,
+                    status="ERROR",
+                    is_non_order_page=False,
+                    raw_text=None,
+                    error=str(exc),
+                    meta=None,
+                )
+                self._complete_page(
+                    context,
+                    success=False,
+                    error={"pageIndex": task.page.index, "message": str(exc)},
+                    cancelled=False,
                 )
                 return
 
-            pages: list[PagePayload]
-            try:
-                if split_mode != "pdf":
-                    raise NotImplementedError("Only splitMode=pdf is currently supported")
-                pages = split_pdf(file_bytes)
-            except Exception as exc:
-                self._handle_initial_failure(
-                    job_row,
-                    job_id,
-                    log_message="Failed to split PDF",
-                    error_prefix="split failed",
-                    exc=exc,
+            if context.cancelled or self._is_cancellation_requested(task.job_id):
+                self._complete_page(
+                    context,
+                    success=False,
+                    error=None,
+                    cancelled=True,
                 )
                 return
 
-            total_pages = len(pages)
-            processed_pages = 0
-            page_errors: list[Dict[str, str]] = []
-            target_model = gemini_config.get("model") or self._gemini.default_model
-            cancellation_requested = False
+            self._repository.record_gemini_log(
+                source="worker",
+                worker_name=self.name,
+                prompt=context.prompt,
+                model=context.target_model,
+                mime_type=task.page.mime_type,
+                request=request_snapshot,
+                success=True,
+                response_text=result.text,
+                meta=result.meta,
+                error=None,
+            )
+            self._repository.record_page_result(
+                task.job_id,
+                task.page.index,
+                status="DONE",
+                is_non_order_page=False,
+                raw_text=result.text,
+                error=None,
+                meta=result.meta,
+            )
 
-            if total_pages > 0:
-                max_workers = min(self._page_concurrency, total_pages)
-                futures = {}
-                pending_results: Dict[int, Dict[str, Any]] = {}
-                next_page_to_emit = pages[0].index
-                with ThreadPoolExecutor(
-                    max_workers=max_workers,
-                    thread_name_prefix=f"{self.name}-page",
-                ) as executor:
-                    for page in pages:
-                        if self._is_cancellation_requested(job_id):
-                            LOGGER.info(
-                                "Cancellation detected before submitting page",
-                                extra={"jobId": job_id, "pageIndex": page.index},
-                            )
-                            cancellation_requested = True
-                            break
-
-                        request_snapshot = self._build_request_snapshot(
-                            job_row,
-                            page,
-                            masters,
-                            gemini_config,
-                            target_model,
-                        )
-                        future = executor.submit(
-                            self._generate_page,
-                            page=page,
-                            prompt=job_row["prompt"],
-                            masters=masters,
-                            gemini_config=gemini_config,
-                        )
-                        futures[future] = (page, request_snapshot)
-
-                    for future in as_completed(futures):
-                        page, request_snapshot = futures[future]
-                        if cancellation_requested or self._is_cancellation_requested(job_id):
-                            cancellation_requested = True
-                            pending_results.clear()
-                            try:
-                                future.result()
-                            except Exception:
-                                pass
-                            continue
-
-                        try:
-                            result = future.result()
-                            pending_results[page.index] = {
-                                "page": page,
-                                "request_snapshot": request_snapshot,
-                                "result": result,
-                                "exception": None,
-                            }
-                        except Exception as exc:
-                            pending_results[page.index] = {
-                                "page": page,
-                                "request_snapshot": request_snapshot,
-                                "result": None,
-                                "exception": exc,
-                            }
-
-                        while not cancellation_requested and next_page_to_emit in pending_results:
-                            outcome = pending_results.pop(next_page_to_emit)
-                            page_to_emit = outcome["page"]
-                            request_snapshot_to_emit = outcome["request_snapshot"]
-                            exc = outcome["exception"]
-
-                            if exc is None:
-                                result = outcome["result"]
-                                self._repository.record_gemini_log(
-                                    source="worker",
-                                    worker_name=self.name,
-                                    prompt=job_row["prompt"],
-                                    model=target_model,
-                                    mime_type=page_to_emit.mime_type,
-                                    request=request_snapshot_to_emit,
-                                    success=True,
-                                    response_text=result.text,
-                                    meta=result.meta,
-                                    error=None,
-                                )
-                                self._repository.record_page_result(
-                                    job_id,
-                                    page_to_emit.index,
-                                    status="DONE",
-                                    is_non_order_page=False,
-                                    raw_text=result.text,
-                                    error=None,
-                                    meta=result.meta,
-                                )
-                                webhook_error = self._send_page_result(
-                                    job_row, page_to_emit.index, result
-                                )
-                                if webhook_error:
-                                    page_errors.append(
-                                        {"pageIndex": page_to_emit.index, "message": webhook_error}
-                                    )
-                                else:
-                                    processed_pages += 1
-                            else:
-                                self._repository.record_gemini_log(
-                                    source="worker",
-                                    worker_name=self.name,
-                                    prompt=job_row["prompt"],
-                                    model=target_model,
-                                    mime_type=page_to_emit.mime_type,
-                                    request=request_snapshot_to_emit,
-                                    success=False,
-                                    response_text=None,
-                                    meta=None,
-                                    error=str(exc),
-                                )
-                                LOGGER.exception(
-                                    "Failed to process page",
-                                    extra={"jobId": job_id, "pageIndex": page_to_emit.index},
-                                )
-                                self._repository.record_page_result(
-                                    job_id,
-                                    page_to_emit.index,
-                                    status="ERROR",
-                                    is_non_order_page=False,
-                                    raw_text=None,
-                                    error=str(exc),
-                                    meta=None,
-                                )
-                                page_errors.append(
-                                    {"pageIndex": page_to_emit.index, "message": str(exc)}
-                                )
-
-                            next_page_to_emit += 1
-
-            if cancellation_requested or self._is_cancellation_requested(job_id):
-                LOGGER.info(
-                    "Cancellation detected before summary",
-                    extra={"jobId": job_id},
+            webhook_error = self._send_page_result(context.job_row, task.page.index, result)
+            if webhook_error:
+                self._complete_page(
+                    context,
+                    success=False,
+                    error={"pageIndex": task.page.index, "message": webhook_error},
+                    cancelled=False,
                 )
-                self._handle_job_cancellation(
-                    job_row,
-                    total_pages,
-                    processed_pages,
-                    page_errors,
+            else:
+                self._complete_page(
+                    context,
+                    success=True,
+                    error=None,
+                    cancelled=False,
                 )
+        finally:
+            context.semaphore.release()
+
+    def _get_job_context(self, job_id: str) -> Optional[PageJobContext]:
+        with _JOB_CONTEXTS_LOCK:
+            return _JOB_CONTEXTS.get(job_id)
+
+    def _complete_page(
+        self,
+        context: PageJobContext,
+        *,
+        success: bool,
+        error: Optional[Dict[str, str]],
+        cancelled: bool,
+    ) -> None:
+        job_id = context.job_row["job_id"]
+        effective_cancelled = cancelled or context.cancelled or self._is_cancellation_requested(job_id)
+        should_finalize = False
+        with context.lock:
+            if effective_cancelled:
+                context.cancelled = True
+            if success:
+                context.processed_pages += 1
+            elif error and not effective_cancelled:
+                context.page_errors.append(error)
+            context.pending_pages -= 1
+            should_finalize = context.pending_pages <= 0
+
+        if should_finalize:
+            self._finalize_job_context(context)
+
+    def _finalize_job_context(self, context: PageJobContext) -> None:
+        job_id = context.job_row["job_id"]
+        with context.lock:
+            if context.completed:
                 return
+            context.completed = True
+            total_pages = context.total_pages
+            processed_pages = context.processed_pages
+            page_errors = list(context.page_errors)
+            cancelled = context.cancelled or self._is_cancellation_requested(job_id)
 
+        with _JOB_CONTEXTS_LOCK:
+            _JOB_CONTEXTS.pop(job_id, None)
+
+        if cancelled:
+            LOGGER.info(
+                "Cancellation detected before summary",
+                extra={"jobId": job_id},
+            )
+            self._handle_job_cancellation(
+                context.job_row,
+                total_pages,
+                processed_pages,
+                page_errors,
+            )
+        else:
             skipped_pages = max(total_pages - processed_pages, 0)
-
             self._repository.update_job_counters(
                 job_id,
                 total_pages=total_pages,
@@ -305,24 +439,24 @@ class JobWorker(threading.Thread):
             )
 
             if page_errors:
-                summary_status = JobStatus.ERROR
                 self._repository.update_job_status(
                     job_id, JobStatus.ERROR, "; ".join(err["message"] for err in page_errors)
                 )
+                summary_status = JobStatus.ERROR
             else:
-                summary_status = JobStatus.DONE
                 self._repository.update_job_status(job_id, JobStatus.DONE, None)
+                summary_status = JobStatus.DONE
 
             self._send_summary(
-                job_row,
+                context.job_row,
                 total_pages=total_pages,
                 processed_pages=processed_pages,
                 skipped_pages=skipped_pages,
                 errors=page_errors,
                 status=summary_status,
             )
-        finally:
-            self._clear_cancellation_flag(job_id)
+
+        self._clear_cancellation_flag(job_id)
 
     def _is_cancellation_requested(self, job_id: str) -> bool:
         if self._admin_state and self._admin_state.is_cancellation_requested(job_id):
@@ -576,4 +710,4 @@ class JobWorker(threading.Thread):
         )
 
 
-__all__ = ["JobWorker"]
+__all__ = ["JobWorker", "JobTask"]

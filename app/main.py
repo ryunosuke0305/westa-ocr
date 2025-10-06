@@ -25,7 +25,7 @@ from .models import ErrorResponse, JobDetail, JobRequest, JobResponse, JobStatus
 from .repository import JobRepository
 from .settings import ENV_FILE_PATH, Settings, get_settings, load_env_file
 from .webhook import WebhookDispatcher
-from .worker import JobWorker
+from .worker import JobWorker, JobTask
 
 LOGGER = get_logger(__name__)
 
@@ -109,7 +109,7 @@ def register_routes(app: FastAPI) -> None:
         _: None = Depends(verify_request),
     ) -> JobResponse | Response:
         repository: JobRepository = request.app.state.repository
-        job_queue: queue.Queue[str] = request.app.state.job_queue
+        job_queue: queue.Queue[object] = request.app.state.job_queue
         admin_state: AdminState = request.app.state.admin_state
         settings: Settings = request.app.state.settings
 
@@ -195,7 +195,7 @@ def register_routes(app: FastAPI) -> None:
             return _error_response("ALREADY_EXISTS", "Job already exists", status.HTTP_409_CONFLICT)
 
         repository.mark_enqueued(job_id)
-        job_queue.put(job_id)
+        job_queue.put(JobTask(job_id=job_id))
         message = "新規ジョブを登録しました"
         if webhook_override_applied:
             message += "（Webhook URL を設定値で上書きしました）"
@@ -289,7 +289,7 @@ def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    job_queue: "queue.Queue[str]" = queue.Queue()
+    job_queue: "queue.Queue[object]" = queue.Queue()
     with ExitStack() as stack:
         repository = JobRepository(settings.sqlite_path)
         stack.callback(repository.close)
@@ -329,7 +329,7 @@ def _build_components(admin_state: AdminState) -> tuple[dict[str, object], int]:
         pending_jobs = repository.list_pending_jobs()
         for job_id in pending_jobs:
             repository.mark_enqueued(job_id)
-            job_queue.put(job_id)
+            job_queue.put(JobTask(job_id=job_id))
 
         stack.pop_all()
 
