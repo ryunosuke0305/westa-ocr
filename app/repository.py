@@ -92,11 +92,13 @@ class JobRepository:
                 success INTEGER NOT NULL,
                 response_text TEXT,
                 meta_json TEXT,
-                error TEXT
+                error TEXT,
+                worker_name TEXT
             );
             """
         )
         self._ensure_worker_name_column()
+        self._ensure_gemini_worker_name_column()
 
     def _ensure_worker_name_column(self) -> None:
         existing_columns = {
@@ -104,6 +106,13 @@ class JobRepository:
         }
         if "worker_name" not in existing_columns:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN worker_name TEXT")
+
+    def _ensure_gemini_worker_name_column(self) -> None:
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(gemini_logs)").fetchall()
+        }
+        if "worker_name" not in existing_columns:
+            self._conn.execute("ALTER TABLE gemini_logs ADD COLUMN worker_name TEXT")
 
     @contextmanager
     def _locked(self):
@@ -438,6 +447,7 @@ class JobRepository:
         response_text: Optional[str],
         meta: Optional[Dict],
         error: Optional[str],
+        worker_name: Optional[str] = None,
     ) -> None:
         payload = {
             "source": source,
@@ -449,16 +459,17 @@ class JobRepository:
             "response_text": response_text,
             "meta_json": json.dumps(meta, ensure_ascii=False) if meta else None,
             "error": error,
+            "worker_name": worker_name,
         }
         with self._locked():
             self._conn.execute(
                 """
                 INSERT INTO gemini_logs (
                     source, prompt_preview, model, mime_type, request_json,
-                    success, response_text, meta_json, error
+                    success, response_text, meta_json, error, worker_name
                 ) VALUES (
                     :source, :prompt_preview, :model, :mime_type, :request_json,
-                    :success, :response_text, :meta_json, :error
+                    :success, :response_text, :meta_json, :error, :worker_name
                 )
                 """,
                 payload,
@@ -469,7 +480,8 @@ class JobRepository:
             rows = self._conn.execute(
                 """
                 SELECT id, created_at, source, prompt_preview, model, mime_type,
-                       request_json, success, response_text, meta_json, error
+                       request_json, success, response_text, meta_json, error,
+                       worker_name
                   FROM gemini_logs
                  ORDER BY id DESC
                  LIMIT ?
@@ -499,6 +511,7 @@ class JobRepository:
                     "response_text": row["response_text"],
                     "meta": meta_payload,
                     "error": row["error"],
+                    "worker_name": row["worker_name"],
                 }
             )
         return logs

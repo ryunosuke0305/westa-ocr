@@ -294,6 +294,7 @@ def _build_dashboard_payload(
                 "meta": entry["meta"],
                 "error": entry["error"],
                 "request": entry["request"],
+                "workerName": entry.get("worker_name"),
             }
         )
 
@@ -499,6 +500,7 @@ def _reload_components(app: FastAPI, settings: Settings) -> None:
             gemini_client=new_gemini,
             webhook_dispatcher=new_webhook,
             idle_sleep=settings.worker_idle_sleep,
+            page_concurrency=settings.worker_page_concurrency,
             admin_state=app.state.admin_state,
             worker_number=index + 1,
             name=f"JobWorker-{index + 1}",
@@ -686,6 +688,7 @@ def register_admin_routes(app: FastAPI) -> None:
                 response_text=None,
                 meta=None,
                 error=str(exc),
+                worker_name="admin-console",
             )
             state.add_message(
                 AdminMessage(
@@ -708,6 +711,7 @@ def register_admin_routes(app: FastAPI) -> None:
             response_text=result.text,
             meta=result.meta,
             error=None,
+            worker_name="admin-console",
         )
         state.add_message(
             AdminMessage(

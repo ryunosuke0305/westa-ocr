@@ -84,6 +84,7 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
         response_text="ok",
         meta={"tokens": 10},
         error=None,
+        worker_name="admin-console",
     )
     repository.record_gemini_log(
         source="worker",
@@ -95,6 +96,7 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
         response_text=None,
         meta=None,
         error="boom",
+        worker_name="JobWorker-1",
     )
 
     logs = repository.list_gemini_logs()
@@ -102,7 +104,9 @@ def test_record_and_list_gemini_logs(tmp_path: Path) -> None:
     assert logs[0]["source"] == "worker"
     assert logs[0]["success"] is False
     assert logs[0]["request"]["prompt"] == "second prompt"
+    assert logs[0]["worker_name"] == "JobWorker-1"
     assert logs[1]["prompt_preview"].startswith("first prompt")
+    assert logs[1]["worker_name"] == "admin-console"
 
     repository.close()
 
