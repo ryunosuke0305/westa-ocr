@@ -1,4 +1,4 @@
-"""Background worker implementation."""
+# バックグラウンドワーカーの実装。
 
 from __future__ import annotations
 
@@ -24,17 +24,15 @@ LOGGER = get_logger(__name__)
 CANCEL_REASON = "Cancelled via admin console"
 
 
+# ページ処理用タスク生成が必要なジョブを表すデータクラス。
 @dataclass(frozen=True)
 class JobTask:
-    """Task representing a job that needs to be split into page requests."""
-
     job_id: str
 
 
+# 1 ページの処理リクエストを表すデータクラス。
 @dataclass(frozen=True)
 class PageTask:
-    """Task representing a single page generation request."""
-
     job_id: str
     page: PagePayload
 
@@ -42,9 +40,18 @@ class PageTask:
 WorkerTask = Union[JobTask, PageTask]
 
 
+# ページ処理の進行状況を共有するためのコンテキストを表すクラス。
 class PageJobContext:
-    """Shared state for coordinating page processing across workers."""
 
+    # ページ単位の処理を調停するための共有状態を初期化する。
+    # 引数:
+    #     job_row: データベースから取得したジョブ行。
+    #     masters (Dict[str, str]): マスター情報の辞書。
+    #     gemini_config (Dict): Gemini 呼び出しに使用する設定値。
+    #     target_model (str): 利用する Gemini モデル名。
+    #     prompt (str): 生成に用いるプロンプト。
+    #     total_pages (int): ジョブ全体のページ数。
+    #     max_parallel (int): 同時実行するページ数の上限。
     def __init__(
         self,
         *,
@@ -75,9 +82,21 @@ _JOB_CONTEXTS: dict[str, PageJobContext] = {}
 _JOB_CONTEXTS_LOCK = threading.Lock()
 
 
+# データベース上のジョブを非同期に処理するワーカースレッド。
 class JobWorker(threading.Thread):
-    """Threaded worker that processes jobs from the database queue."""
 
+    # ワーカーが利用する依存を受け取り、スレッドを初期化する。
+    # 引数:
+    #     repository (JobRepository): ジョブ情報へアクセスするリポジトリ。
+    #     job_queue (queue.Queue[WorkerTask]): ジョブやページタスクを受け取る共有キュー。
+    #     file_fetcher (FileFetcher): ソースファイルを取得するフェッチャー。
+    #     gemini_client (GeminiClient): Gemini API へのクライアント。
+    #     webhook_dispatcher (WebhookDispatcher): Webhook 送信を担当するディスパッチャー。
+    #     idle_sleep (float): キューが空の際に待機する秒数。
+    #     admin_state (AdminState | None): 管理画面の共有状態。
+    #     worker_number (int): ワーカーの通し番号。
+    #     name (str | None): スレッド名。
+    #     page_concurrency (int): ページ処理の同時実行数。
     def __init__(
         self,
         *,
@@ -107,14 +126,17 @@ class JobWorker(threading.Thread):
             raise ValueError("page_concurrency must be >= 1")
         self._page_concurrency = page_concurrency
 
+    # ワーカースレッドに停止を要求する。
     def stop(self) -> None:
         self._stop_event.set()
 
+    # キューからタスクを取り出して処理するメインループ。
     def run(self) -> None:  # pragma: no cover - threading logic
         LOGGER.info(
             "Worker thread started",
             extra={"workerName": self.name, "workerNumber": self.worker_number},
         )
+        # キューにタスクが入るまで待機し、ジョブ単位またはページ単位で処理を進める。
         while not self._stop_event.is_set():
             try:
                 task = self._queue.get(timeout=self._idle_sleep)
@@ -142,12 +164,16 @@ class JobWorker(threading.Thread):
             extra={"workerName": self.name, "workerNumber": self.worker_number},
         )
 
+    # ジョブ全体の初期処理を行いページタスクを生成する。
+    # 引数:
+    #     job_id (str): 処理対象のジョブ ID。
     def _process_job(self, job_id: str) -> None:
         job_row = self._repository.get_job(job_id)
         if job_row is None:
             LOGGER.warning("Job not found when processing", extra={"jobId": job_id})
             return
 
+        # 進行中のジョブのみを処理し、完了済みやエラー状態は無視する。
         if job_row["status"] not in (
             JobStatus.RECEIVED.value,
             JobStatus.ENQUEUED.value,
@@ -208,6 +234,7 @@ class JobWorker(threading.Thread):
         target_model = gemini_config.get("model") or self._gemini.default_model
 
         if total_pages == 0:
+            # 0 ページの PDF はその場で完了扱いにし、各種カウンタをリセットする。
             self._repository.update_job_counters(
                 job_id,
                 total_pages=0,
@@ -255,8 +282,12 @@ class JobWorker(threading.Thread):
             _JOB_CONTEXTS[job_id] = context
 
         for page in pages:
+            # ページごとの処理は別タスクとして再キューイングし、同一ワーカーでも別スレッドでも処理可能にする。
             self._queue.put(PageTask(job_id=job_id, page=page))
 
+    # ページタスクを処理し、結果を記録および通知する。
+    # 引数:
+    #     task (PageTask): キューから取得したページタスク。
     def _process_page_task(self, task: PageTask) -> None:
         context = self._get_job_context(task.job_id)
         if context is None:
@@ -376,10 +407,21 @@ class JobWorker(threading.Thread):
         finally:
             context.semaphore.release()
 
+    # アクティブなジョブコンテキストを取得する。
+    # 引数:
+    #     job_id (str): 取得対象のジョブ ID。
+    # 返り値:
+    #     Optional[PageJobContext]: 見つかったコンテキスト、存在しない場合は None。
     def _get_job_context(self, job_id: str) -> Optional[PageJobContext]:
         with _JOB_CONTEXTS_LOCK:
             return _JOB_CONTEXTS.get(job_id)
 
+    # ページ処理完了時にカウンターとエラー情報を更新する。
+    # 引数:
+    #     context (PageJobContext): 対象ジョブの共有状態。
+    #     success (bool): ページ処理が成功したか。
+    #     error (Optional[Dict[str, str]]): エラー情報。
+    #     cancelled (bool): キャンセル扱いかどうか。
     def _complete_page(
         self,
         context: PageJobContext,
@@ -402,8 +444,12 @@ class JobWorker(threading.Thread):
             should_finalize = context.pending_pages <= 0
 
         if should_finalize:
+            # 最後のページが完了したタイミングでサマリー送信や後処理をまとめて行う。
             self._finalize_job_context(context)
 
+    # ページ処理完了後に集計とサマリー送信を行う。
+    # 引数:
+    #     context (PageJobContext): 対象ジョブの共有状態。
     def _finalize_job_context(self, context: PageJobContext) -> None:
         job_id = context.job_row["job_id"]
         with context.lock:
@@ -458,12 +504,23 @@ class JobWorker(threading.Thread):
 
         self._clear_cancellation_flag(job_id)
 
+    # ジョブにキャンセル要求が出ているかを判定する。
+    # 引数:
+    #     job_id (str): 確認対象のジョブ ID。
+    # 返り値:
+    #     bool: キャンセル要求がある場合は True。
     def _is_cancellation_requested(self, job_id: str) -> bool:
         if self._admin_state and self._admin_state.is_cancellation_requested(job_id):
             return True
         status = self._repository.get_job_status(job_id)
         return status == JobStatus.CANCELLED.value
 
+    # キャンセル時の状態更新と通知をまとめて行う。
+    # 引数:
+    #     job_row: ジョブのデータベース行。
+    #     total_pages (int): ジョブ全体のページ数。
+    #     processed_pages (int): 完了したページ数。
+    #     page_errors (list[Dict[str, str]]): 蓄積したページエラー一覧。
     def _handle_job_cancellation(
         self,
         job_row,
@@ -471,6 +528,7 @@ class JobWorker(threading.Thread):
         processed_pages: int,
         page_errors: list[Dict[str, str]],
     ) -> None:
+        # キャンセル時はページエラー一覧に通知用メッセージを追加する。
         skipped_pages = max(total_pages - processed_pages, 0)
         errors = list(page_errors)
         errors.append({"message": "Cancelled via admin console"})
@@ -490,10 +548,22 @@ class JobWorker(threading.Thread):
             status=JobStatus.CANCELLED,
         )
 
+    # 管理画面上のキャンセルフラグをリセットする。
+    # 引数:
+    #     job_id (str): フラグを解除するジョブ ID。
     def _clear_cancellation_flag(self, job_id: str) -> None:
         if self._admin_state is not None:
             self._admin_state.clear_job_cancellation(job_id)
 
+    # Gemini 呼び出し内容をログ用にスナップショット化する。
+    # 引数:
+    #     job_row: ジョブ情報を含むデータベース行。
+    #     page (PagePayload): 処理対象のページデータ。
+    #     masters (Dict[str, str]): マスター情報。
+    #     gemini_config (Dict): Gemini への追加設定。
+    #     target_model (str): 使用するモデル名。
+    # 返り値:
+    #     Dict: ログ保存用に正規化した呼び出し情報。
     def _build_request_snapshot(
         self,
         job_row,
@@ -524,6 +594,14 @@ class JobWorker(threading.Thread):
             },
         }
 
+    # Gemini API を呼び出して 1 ページ分のテキストを生成する。
+    # 引数:
+    #     page (PagePayload): OCR 対象のページ。
+    #     prompt (str): Gemini へ渡すプロンプト。
+    #     masters (Dict[str, str]): マスターデータ。
+    #     gemini_config (Dict): 追加設定。
+    # 返り値:
+    #     任意: Gemini クライアントが返すレスポンス。
     def _generate_page(
         self,
         *,
@@ -544,6 +622,13 @@ class JobWorker(threading.Thread):
             max_output_tokens=gemini_config.get("maxOutputTokens"),
         )
 
+    # ページ処理結果を Webhook へ送信する。
+    # 引数:
+    #     job_row: 対象ジョブのデータベース行。
+    #     page_index (int): ページ番号。
+    #     result: Gemini の生成結果。
+    # 返り値:
+    #     Optional[str]: 送信失敗時のエラーメッセージ。成功時は None。
     def _send_page_result(self, job_row, page_index: int, result) -> Optional[str]:
         token = job_row["webhook_token"] or None
         payload = {
@@ -577,7 +662,7 @@ class JobWorker(threading.Thread):
                 error=str(exc),
                 token=token,
             )
-            # Record the failure so that it surfaces in the summary payload.
+            # 失敗情報をサマリーペイロードにも反映させるために記録する。
             self._repository.record_page_result(
                 job_row["job_id"],
                 page_index,
@@ -600,6 +685,14 @@ class JobWorker(threading.Thread):
         )
         return None
 
+    # ジョブ全体のサマリーを Webhook へ送信する。
+    # 引数:
+    #     job_row: 対象ジョブのデータベース行。
+    #     total_pages (int): 全ページ数。
+    #     processed_pages (int): 完了したページ数。
+    #     skipped_pages (int): スキップされたページ数。
+    #     errors (list[Dict[str, str]]): 発生したエラー情報の一覧。
+    #     status (Optional[JobStatus]): 最終ジョブステータス。
     def _send_summary(
         self,
         job_row,
@@ -652,6 +745,16 @@ class JobWorker(threading.Thread):
             token=token,
         )
 
+    # Webhook 呼び出し結果を管理画面のログへ記録する。
+    # 引数:
+    #     job_row: 対象ジョブのデータベース行。
+    #     event (str): ログ対象イベント名。
+    #     payload (Dict): 送信したペイロード。
+    #     success (bool): 送信が成功したかどうか。
+    #     status_code (Optional[int]): 応答ステータスコード。
+    #     response_text (Optional[str]): 応答本文。
+    #     error (Optional[str]): エラー文字列。
+    #     token (Optional[str]): Webhook 認証トークン。
     def _log_relay_webhook(
         self,
         job_row,
@@ -666,6 +769,7 @@ class JobWorker(threading.Thread):
     ) -> None:
         if self._admin_state is None:
             return
+        # 認証トークンは管理画面のログに残さないようにマスクする。
         payload_for_log = dict(payload)
         if payload_for_log.get("token"):
             payload_for_log["token"] = "***"
@@ -683,6 +787,13 @@ class JobWorker(threading.Thread):
             token=token,
         )
 
+    # ジョブの初期段階で発生した失敗を処理する。
+    # 引数:
+    #     job_row: 対象ジョブのデータベース行。
+    #     job_id (str): ジョブ ID。
+    #     log_message (str): ログ出力時の説明文。
+    #     error_prefix (str): エラーメッセージの接頭辞。
+    #     exc (Exception): 発生した例外。
     def _handle_initial_failure(
         self,
         job_row,
@@ -693,6 +804,7 @@ class JobWorker(threading.Thread):
         exc: Exception,
     ) -> None:
         LOGGER.exception(log_message, extra={"jobId": job_id})
+        # 初期段階で失敗した場合も状態とサマリーを更新し、再試行に備える。
         self._repository.update_job_status(job_id, JobStatus.ERROR, str(exc))
         self._repository.update_job_counters(
             job_id,
