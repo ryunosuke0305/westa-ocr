@@ -616,6 +616,7 @@ class JobWorker(threading.Thread):
             page_bytes=page.data,
             mime_type=page.mime_type,
             masters=masters,
+            api_key_override=gemini_config.get("apiKey"),
             temperature=gemini_config.get("temperature"),
             top_p=gemini_config.get("topP"),
             top_k=gemini_config.get("topK"),

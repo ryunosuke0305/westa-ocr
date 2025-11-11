@@ -191,7 +191,7 @@ def register_routes(app: FastAPI) -> None:
         LOGGER.info("Registering new job", extra={"jobId": job_id, "orderId": payload.order_id})
         webhook_payload = payload.webhook.model_dump(mode="json")
         webhook_override_applied = False
-        if settings.webhook_url:
+        if settings.webhook_url and not webhook_payload.get("url"):
             webhook_payload["url"] = settings.webhook_url
             webhook_override_applied = True
             LOGGER.info(

@@ -51,13 +51,15 @@ class GeminiClient:
         page_bytes: bytes,
         mime_type: str,
         masters: Dict[str, str],
+        api_key_override: Optional[str] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
     ) -> GeminiResult:
         target_model = model or self._default_model
-        if not self._api_key:
+        api_key = api_key_override or self._api_key
+        if not api_key:
             LOGGER.warning(
                 "Gemini API key not configured; returning simulated output.",
                 extra={"model": target_model},
@@ -112,7 +114,7 @@ class GeminiClient:
         start = time.perf_counter()
         response = client.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent",
-            params={"key": self._api_key},
+            params={"key": api_key},
             json=payload,
         )
         duration_ms = int((time.perf_counter() - start) * 1000)

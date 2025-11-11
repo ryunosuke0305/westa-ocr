@@ -32,6 +32,7 @@ class WebhookConfig(BaseModel):
 
 
 class GeminiConfig(BaseModel):
+    api_key: Optional[str] = Field(default=None, alias="apiKey")
     model: Optional[str] = Field(default=None, description="Gemini model name")
     temperature: Optional[float] = None
     topP: Optional[float] = Field(default=None, alias="topP")
