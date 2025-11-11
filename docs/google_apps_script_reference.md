@@ -8,127 +8,9 @@
  * スプレッドシートに注文情報と明細情報を記録する。
  * PDF全体を一度にAPIに渡し、ページごとの解析をLLMに指示する。
  *
- * ※この関数は旧フロー（GAS→Gemini 直呼び）のまま残してあります。
- *   新フローでは ProcessOrder_test_relay を使用してください。
- *
  * @param {string} PROMPT Gemini APIに渡すプロンプト文字列。
  * @param {string} PATTERN マスタフィルタ用のパターン
  */
-function ProcessOrder_test(PROMPT, PATTERN) {
-  // 定数定義
-  const SPREADSHEET_ID = '193JwqYPME-f33UdyfBxEDkCCWimxppnC2CE9L7PrqoQ';
-  const SHEET_ORDERS_NAME = '注文一覧'; // 注文一覧シート
-  const SHEET_DETAILS_NAME = '明細一覧'; // 明細一覧シート
-  const SHEET_SHIPMASTER_NAME = '納入場所マスタ'; //納入場所マスタシート
-  const SHEET_ITEMMASTER_NAME = '品目マスタ'; //品目マスタシート
-  const API_KEY = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-
-  // スプレッドシートとシートを取得
-  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheetOrders = spreadsheet.getSheetByName(SHEET_ORDERS_NAME);
-  const sheetDetails = spreadsheet.getSheetByName(SHEET_DETAILS_NAME);
-  const sheetShipMaster = spreadsheet.getSheetByName(SHEET_SHIPMASTER_NAME);
-  const sheetItemMaster = spreadsheet.getSheetByName(SHEET_ITEMMASTER_NAME);
-
-  // ヘッダー行から各列のインデックスを取得
-  const ordersData = sheetOrders.getDataRange().getValues();
-  const header = ordersData[0];
-  const orderIdIndex = header.indexOf("注文書ID");
-  const pdfUrlIndex = header.indexOf("注文書ファイル");
-  const statusIndex = header.indexOf("処理ステータス");
-  const pageCountIndex = header.indexOf("ページ数");
-
-  // マスタから対象パターンでフィルタした納入場所一覧を取得
-  const masterShipData = sheetShipMaster.getDataRange().getValues();
-  const masterShipHeader = masterShipData[0];
-  const masterShipFiltered = masterShipData.filter((row, idx) => idx > 0 && row[1] === PATTERN);
-  const masterShip = [masterShipHeader, ...masterShipFiltered]
-    .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
-
-  // マスタから対象パターンでフィルタした品目一覧を取得
-  const masterItemData = sheetItemMaster.getDataRange().getValues();
-  const masterItemHeader = masterItemData[0];
-  const masterItemFiltered = masterItemData.filter((row, idx) => idx > 0 && row[1] === PATTERN);
-  const masterItem = [masterItemHeader, ...masterItemFiltered]
-    .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
-  
-  // "注文一覧"シートの2行目から最終行までループ
-  for (let i = 1; i < ordersData.length; i++) {
-    const row = ordersData[i];
-    const status = row[statusIndex];
-
-    // 処理ステータスが空の場合のみ実行
-    if (!status) {
-      try {
-        const pdfUrl = row[pdfUrlIndex];
-        if (!pdfUrl) {
-          console.warn(`Row ${i + 1}: PDFのURLが空のためスキップします。`);
-          continue;
-        }
-        
-        const orderId = row[orderIdIndex]; // 親となる注文書IDを取得
-        const pdfBlob = fetchPdfBlobFromUrl(pdfUrl); // GoogleドライブのURLからPDFファイルを取得
-
-        // PDF全体を一度だけAPIに渡し、ページ毎の解析を指示
-        const today = Utilities.formatDate(new Date(), "JST", "yyyyMMdd");
-        const replacedPrompt = PROMPT.replace('{current_date}', today);
-        const extractedText = callGeminiApiApendMaster(pdfBlob, replacedPrompt, masterShip, masterItem, API_KEY);
-        
-        // ページ毎に構造化されたテキストを解析する
-        const allPagesData = parseMultiPageDataFromLLM(extractedText);
-
-        // AIが解析したページ数を「注文一覧」シートに書き込む
-        const processedPageCount = allPagesData.filter(p => !p.isNonOrderPage).length; // 注文書ではないページはカウントしない
-        if (pageCountIndex > -1) {
-          sheetOrders.getRange(i + 1, pageCountIndex + 1).setValue(processedPageCount);
-        }
-
-        // 解析されたページデータごとにループ
-        allPagesData.forEach(pageData => {
-          if (pageData.isNonOrderPage) {
-            return; // 注文書ではないページはスキップ
-          }
-
-          const orderDetails = pageData["注文明細"] || [];
-
-          // 解析した注文明細を「明細一覧」シートに書き込む
-          orderDetails.forEach(detail => {
-            // 【変更後】のカラム定義に合わせて新しい行を作成
-            const newRow = [
-              generateRandomID(),         // 明細ID (乱数)
-              orderId,                    // 注文書ID (親ID)
-              detail["受注伝票番号"] || "",
-              detail["納入場所"] || "",
-              detail["得意先"] || "",
-              detail["得意先注文番号"] || "",
-              detail["受注日"] || "",
-              detail["出荷予定日"] || "",
-              detail["顧客納期"] || "",
-              detail["得意先品目コード"] || "",
-              detail["自社品目コード"] || "",
-              detail["受注商品名称"] || "",
-              detail["受注数"] || "",
-              detail["単位"] || "",
-              detail["受注単価"] || "",
-              detail["受注記事"] || "",
-            ];
-            sheetDetails.appendRow(newRow);
-          });
-        });
-
-        // 処理が成功したらステータスを更新
-        sheetOrders.getRange(i + 1, statusIndex + 1).setValue("読込完了");
-
-      } catch (error) {
-        console.error(`行 ${i + 1} の処理中にエラーが発生しました: ${error.toString()}`);
-        sheetOrders.getRange(i + 1, statusIndex + 1).setValue(`エラー: ${error.message}`);
-      }
-    }
-  }
-}
-
 
 /* =========================================================
    新フロー（リレー経由）: 既存関数は残し、変更箇所は別名で追加
@@ -141,7 +23,7 @@ function ProcessOrder_test(PROMPT, PATTERN) {
  * @param {string} PROMPT
  * @param {string} PATTERN
  */
-function ProcessOrder_test_relay(PROMPT, PATTERN) {
+function ProcessOrder_relay(PROMPT, PATTERN) {
   const SPREADSHEET_ID = '193JwqYPME-f33UdyfBxEDkCCWimxppnC2CE9L7PrqoQ';
   const SHEET_ORDERS_NAME = '注文一覧';
   const SHEET_SHIPMASTER_NAME = '納入場所マスタ';
@@ -338,9 +220,17 @@ function handlePageResult_(payload) {
         detail["受注数"] || "",
         detail["単位"] || "",
         detail["受注単価"] || "",
+        detail["納品書記事"] || "",            // ★ 新規列（受注単価と受注記事の間）
         detail["受注記事"] || "",
       ];
       sheetDetails.appendRow(newRow);
+      // 明細一覧の最後列に更新時刻を記録
+      const r = sheetDetails.getLastRow();
+      const c = sheetDetails.getLastColumn();
+      sheetDetails.getRange(r, c)
+      .setValue(Utilities.formatDate(
+        new Date(), Session.getScriptTimeZone() || 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss'
+      ));
     });
   });
 
@@ -386,6 +276,8 @@ function handleJobSummary_(payload) {
       break;
     }
   }
+
+  deletePageReceivedForOrder_(orderId);
 
   return ContentService.createTextOutput(JSON.stringify({ ok: true }))
     .setMimeType(ContentService.MimeType.JSON);
@@ -472,25 +364,27 @@ function parseMultiPageDataFromLLM(text) {
 
       rows.forEach(row => {
         const columns = row.split(",").map(col => col.trim());
-        if (columns.length >= 14) {
+        // ★ 列数チェックを15列に変更（「納品書記事」を追加）
+        if (columns.length >= 15) {
           detailRows.push({
-            "受注伝票番号":     columns[0] || "",
-            "納入場所":         columns[1] || "",
-            "得意先":           columns[2] || "",
-            "得意先注文番号":   columns[3] || "",
-            "受注日":           columns[4] || "",
-            "出荷予定日":       columns[5] || "",
-            "顧客納期":         columns[6] || "",
-            "得意先品目コード": columns[7] || "",
-            "自社品目コード":   columns[8] || "",
-            "受注商品名称":     columns[9] || "",
+            "受注伝票番号":     columns[0]  || "",
+            "納入場所":         columns[1]  || "",
+            "得意先":           columns[2]  || "",
+            "得意先注文番号":   columns[3]  || "",
+            "受注日":           columns[4]  || "",
+            "出荷予定日":       columns[5]  || "",
+            "顧客納期":         columns[6]  || "",
+            "得意先品目コード": columns[7]  || "",
+            "自社品目コード":   columns[8]  || "",
+            "受注商品名称":     columns[9]  || "",
             "受注数":           columns[10] || "",
             "単位":             columns[11] || "",
             "受注単価":         columns[12] || "",
-            "受注記事":         columns[13] || "",
+            "納品書記事":       columns[13] || "", // ★ 追加
+            "受注記事":         columns[14] || "",
           });
         } else {
-          console.log(`列数が14未満のため、この明細行をスキップしました: ${row}`);
+          console.log(`列数が15未満のため、この明細行をスキップしました: ${row}`);
         }
       });
     }
@@ -515,75 +409,6 @@ function extractUsingRegex(text, regex) {
   const match = text.match(regex);
   return match && match[1] ? match[1].trim() : "";
 }
-
-
-/**
- * Google ドライブのファイルURLからファイルIDを抽出し、PDFのBlobオブジェクトを取得する
- * （旧フロー用に残置。新フローでは extractDriveFileId のみ使用）
- */
-function fetchPdfBlobFromUrl(fileUrl) {
-  const fileIdMatch = fileUrl.match(/[-\w]{25,}/);
-  if (!fileIdMatch) {
-    throw new Error(`無効なGoogleドライブURLです: ${fileUrl}`);
-  }
-  const fileId = fileIdMatch[0];
-  const file = DriveApp.getFileById(fileId);
-  return file.getBlob();
-}
-
-
-/**
- * Gemini APIを呼び出し、PDFの内容をテキストとして抽出する（旧フロー用に残置）
- */
-function callGeminiApiApendMaster(pdfBlob, prompt, masterShip, masterItem, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  const pdfData = Utilities.base64Encode(pdfBlob.getBytes());
-
-  const payload = {
-    contents: [
-      {
-        parts: [
-        { inline_data: { mime_type: 'application/pdf', data: pdfData } },
-        { text: prompt + "\n\n" + masterShip  + "\n\n" + masterItem }
-        ]
-      }
-    ],
-    generationConfig: {
-      temperature: 0.1,
-      topP: 0.9,
-      maxOutputTokens: 65536,
-      response_mime_type: "text/plain",
-    }
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  console.log("リクエスト開始");
-  const response = UrlFetchApp.fetch(url, options);
-  console.log(response);
-  const responseCode = response.getResponseCode();
-  const responseBody = response.getContentText();
-
-  if (responseCode === 200) {
-    const parsedResponse = JSON.parse(responseBody);
-    if (parsedResponse.candidates && parsedResponse.candidates[0].content && parsedResponse.candidates[0].content.parts.length > 0) {
-      console.log(parsedResponse);
-      return parsedResponse.candidates[0].content.parts[0].text;
-    } else {
-      console.error("API Response Body:", responseBody);
-      throw new Error("APIからのレスポンスにテキストが含まれていません。");
-    }
-  } else {
-    console.error("API Error Response:", responseBody);
-    throw new Error(`APIリクエストエラー: ${responseCode}. Response: ${responseBody}`);
-  }
-}
-
 
 /**
  * 10桁のランダムな英数字IDを生成する
@@ -617,6 +442,20 @@ function logToSheet(logMessage) {
   // Write the timestamp to Column A (A1) and the log message to Column B (B1) of the new top row
   logSheet.getRange("A1").setValue(timestamp);
   logSheet.getRange("B1").setValue(logMessage);
+}
+
+function deletePageReceivedForOrder_(orderId) {
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  let count = 0;
+  const prefix = `PAGE_RECEIVED_${orderId}_`;
+  for (const k in all) {
+    if (k.startsWith(prefix)) {
+      props.deleteProperty(k);
+      count++;
+    }
+  }
+  logToSheet(`cleanup: deleted ${count} PAGE_RECEIVED_* keys for order ${orderId}`);
 }
 
 
