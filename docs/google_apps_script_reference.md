@@ -33,11 +33,13 @@ function ProcessOrder_relay(PROMPT, PATTERN) {
   const RELAY_TOKEN = PropertiesService.getScriptProperties().getProperty('RELAY_TOKEN'); // Bearer（必須）
   const WEBHOOK_URL = PropertiesService.getScriptProperties().getProperty('WEBHOOK_URL'); // このGASのWebアプリURL(/exec)
   const WEBHOOK_TOKEN = PropertiesService.getScriptProperties().getProperty('WEBHOOK_TOKEN'); // リレー→GAS Bearer
+  const GEMINI_API_KEY = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
 
   if (!RELAY_URL) throw new Error('RELAY_URL が未設定です（スクリプトプロパティ）。');
   if (!RELAY_TOKEN) throw new Error('RELAY_TOKEN が未設定です（スクリプトプロパティ）。');
   if (!WEBHOOK_URL) throw new Error('WEBHOOK_URL が未設定です（スクリプトプロパティ）。');
   if (!WEBHOOK_TOKEN) throw new Error('WEBHOOK_TOKEN が未設定です（スクリプトプロパティ）。');
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY が未設定です（スクリプトプロパティ）。');
 
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheetOrders = spreadsheet.getSheetByName(SHEET_ORDERS_NAME);
@@ -90,7 +92,13 @@ function ProcessOrder_relay(PROMPT, PATTERN) {
         pattern: PATTERN,
         masters: { shipCsv, itemCsv },
         webhook: { url: WEBHOOK_URL, token: WEBHOOK_TOKEN }, // ← Tokenのみ
-        gemini: { model: "gemini-2.5-flash", temperature: 0.1, topP: 0.9, maxOutputTokens: 65536 },
+        gemini: {
+          apiKey: GEMINI_API_KEY,
+          model: "gemini-2.5-flash",
+          temperature: 0.1,
+          topP: 0.9,
+          maxOutputTokens: 65536
+        },
         options: { splitMode: "pdf", concurrency: 3 },
         idempotencyKey: `${orderId}`
       };
@@ -457,6 +465,5 @@ function deletePageReceivedForOrder_(orderId) {
   }
   logToSheet(`cleanup: deleted ${count} PAGE_RECEIVED_* keys for order ${orderId}`);
 }
-
 
 ```
